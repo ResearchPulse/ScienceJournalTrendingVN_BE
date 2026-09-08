@@ -3,11 +3,15 @@ import { registerWithEmailPassword, activateAccount, resendActivationEmail } fro
 import logger from '../../../utils/logger.js';
 import { createLog } from '../../system/services/log.service.js';
 import { isValidEmail } from '../../../utils/validation.js';
-import { verifyChildAccessToken, verifyChildRefreshToken } from '../config/authTokens.js';
-import { getAuthCookieNames, getAuthCookieOptions, getClearAuthCookieOptions } from '../utils/authCookies.js';
-import { bootstrapSso, createLogoutBlocker, inspectParentCookie } from '../services/sso.service.js';
-import { authUserRepository } from '../middlewares/auth.middleware.js';
-import { verifyBlocker } from '../services/sso.service.js';
+import { verifyChildRefreshToken, verifyParentRefreshToken } from '../config/authTokens.js';
+import {
+  getAuthCookieNames,
+  getAuthCookieOptions,
+  getClearAuthCookieOptions,
+  getParentCookieClearOptions,
+} from '../utils/authCookies.js';
+import { resolveLocalSsoUser } from '../services/sso.service.js';
+import { resolveAuthenticatedUser } from '../middlewares/auth.middleware.js';
 
 export const login = async (request, reply) => {
   try {
@@ -67,7 +71,9 @@ export const login = async (request, reply) => {
 export const refreshToken = async (request, reply) => {
   try {
     const cookieNames = getAuthCookieNames();
-    const refreshTokenValue = request.cookies?.[cookieNames.refresh];
+    const childRefreshToken = request.cookies?.[cookieNames.refresh];
+    const parentRefreshToken = request.cookies?.refresh_token;
+    const refreshTokenValue = childRefreshToken || parentRefreshToken;
     
     if (!refreshTokenValue) {
       return reply.status(401).send({
@@ -79,7 +85,9 @@ export const refreshToken = async (request, reply) => {
 
     let decoded;
     try {
-      decoded = verifyChildRefreshToken(refreshTokenValue);
+      decoded = childRefreshToken
+        ? verifyChildRefreshToken(refreshTokenValue)
+        : verifyParentRefreshToken(refreshTokenValue);
     } catch (jwtError) {
       return reply.status(401).send({
         success: false,
@@ -88,11 +96,10 @@ export const refreshToken = async (request, reply) => {
       });
     }
 
-    const newAccessToken = signToken({
-      user_id: decoded.user_id,
-      email: decoded.email,
-      role: decoded.role,
-    });
+    const user = childRefreshToken
+      ? { user_id: decoded.user_id, email: decoded.email, role: decoded.role }
+      : await resolveLocalSsoUser(decoded.email || decoded.username);
+    const newAccessToken = signToken(user);
 
     reply.setCookie(cookieNames.access, newAccessToken, getAuthCookieOptions('access'));
 
@@ -115,8 +122,9 @@ export const refreshToken = async (request, reply) => {
 
 export const checkAuth = async (request, reply) => {
   try {
-    const accessToken = request.cookies?.[getAuthCookieNames().access]
-      || request.headers.authorization?.replace(/^Bearer\s+/i, '');
+    const accessToken = request.headers.authorization?.replace(/^Bearer\s+/i, '')
+      || request.cookies?.[getAuthCookieNames().access]
+      || request.cookies?.access_token;
 
     if (!accessToken) {
       return reply.status(401).send({
@@ -127,17 +135,7 @@ export const checkAuth = async (request, reply) => {
       });
     }
 
-    const decoded = verifyChildAccessToken(accessToken);
-    const user = await authUserRepository.findById(decoded.user_id);
-    if (!user || user.status !== 'ACTIVE') {
-      return reply.status(403).send({ success: false, authenticated: false, code: 'ACCOUNT_UNAVAILABLE' });
-    }
-    if (decoded.auth_source === 'parent_sso' && decoded.parent_fingerprint) {
-      const blocker = verifyBlocker(request.cookies?.[getAuthCookieNames().blocker]);
-      if (blocker?.fingerprint === decoded.parent_fingerprint) {
-        return reply.status(409).send({ success: false, authenticated: false, code: 'SSO_BLOCKED' });
-      }
-    }
+    const user = await resolveAuthenticatedUser(request);
     return reply.status(200).send({
       success: true,
       authenticated: true,
@@ -145,14 +143,23 @@ export const checkAuth = async (request, reply) => {
         user_id: user.user_id,
         email: user.email,
         role: user.role,
+        status: user.status,
+        ...(user.auth_source ? { auth_source: user.auth_source } : {}),
       },
+      user: {
+        user_id: user.user_id,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+      },
+      access_token: accessToken,
     });
 
   } catch (error) {
-    return reply.status(401).send({
+    return reply.status(error.statusCode || 401).send({
       success: false,
       authenticated: false,
-      code: "ACCESS_TOKEN_INVALID",
+      code: error.code || "ACCESS_TOKEN_INVALID",
       message: "Access token khÃ´ng há»£p lá»‡ hoáº·c Ä‘Ã£ háº¿t háº¡n",
     });
   }
@@ -163,22 +170,18 @@ export const logout = async (request, reply) => {
     const cookieNames = getAuthCookieNames();
     reply.clearCookie(cookieNames.access, getClearAuthCookieOptions());
     reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
-    const parentToken = inspectParentCookie(request);
-    if (parentToken) {
-      try {
-        const blocker = createLogoutBlocker(parentToken);
-        reply.setCookie(cookieNames.blocker, blocker.value, getAuthCookieOptions('access', {
-          maxAge: Math.max(1, blocker.exp - Math.floor(Date.now() / 1000)),
-        }));
-      } catch {
-        // Invalid/expired parent cookie must not prevent child logout.
-      }
+    reply.clearCookie('access_token', getClearAuthCookieOptions());
+    reply.clearCookie('refresh_token', getClearAuthCookieOptions());
+
+    if (process.env.NODE_ENV === 'production') {
+      reply.clearCookie('access_token', getParentCookieClearOptions());
+      reply.clearCookie('refresh_token', getParentCookieClearOptions());
     }
 
     return reply.status(200).send({
       success: true,
       code: "LOGOUT_SUCCESS",
-      message: "ÄÄƒng xuáº¥t thÃ� nh cÃ´ng",
+      message: "Đăng xuất thành công",
     });
   } catch (error) {
     logger.error("Lá»—i há»‡ thá»‘ng trong controller Ä‘Äƒng xuáº¥t:", error);
