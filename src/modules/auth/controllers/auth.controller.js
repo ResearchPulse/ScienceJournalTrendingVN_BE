@@ -173,9 +173,13 @@ export const logout = async (request, reply) => {
     reply.clearCookie('access_token', getClearAuthCookieOptions());
     reply.clearCookie('refresh_token', getClearAuthCookieOptions());
 
-    if (process.env.NODE_ENV === 'production') {
-      reply.clearCookie('access_token', getParentCookieClearOptions());
-      reply.clearCookie('refresh_token', getParentCookieClearOptions());
+    const parentOptions = getParentCookieClearOptions();
+    reply.clearCookie('access_token', parentOptions);
+    reply.clearCookie('refresh_token', parentOptions);
+
+    if (parentOptions.domain?.startsWith('.')) {
+      reply.clearCookie('access_token', { ...parentOptions, domain: parentOptions.domain.slice(1) });
+      reply.clearCookie('refresh_token', { ...parentOptions, domain: parentOptions.domain.slice(1) });
     }
 
     return reply.status(200).send({
