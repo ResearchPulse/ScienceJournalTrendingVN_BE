@@ -131,7 +131,7 @@ export const refreshToken = async (request, reply) => {
 
 export const checkAuth = async (request, reply) => {
   try {
-    let accessToken = request.cookies?.access_token || request.cookies?.sso_access_token;
+    let accessToken = request.cookies?.access_token;
     if (!accessToken && request.headers.authorization?.startsWith('Bearer ')) {
       accessToken = request.headers.authorization.split(' ')[1];
     }
@@ -166,39 +166,13 @@ export const checkAuth = async (request, reply) => {
 
 export const logout = async (request, reply) => {
   try {
-    const origin = request.headers.origin || '';
-    const host = request.headers.host || '';
-    const isHyperDataLab = origin.includes('hyperdatalab.org') || host.includes('hyperdatalab.org');
-
-    const clearHeaders = [
-      // Xóa cookie cấp host (vietnam-api.hyperdatalab.org hoặc localhost)
-      'access_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax',
-      'access_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure',
-      'refresh_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax',
-      'refresh_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure',
-      'sso_access_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax',
-      'sso_access_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure',
-    ];
-
-    if (isHyperDataLab) {
-      const parentDomain = process.env.COOKIE_DOMAIN?.trim() || '.hyperdatalab.org';
-      clearHeaders.push(
-        // Xóa cookie cấp root domain (.hyperdatalab.org) cho cả các biến thể Lax và None/Secure
-        `access_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax`,
-        `access_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`,
-        `refresh_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax`,
-        `refresh_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`,
-        `sso_access_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax`,
-        `sso_access_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`,
-      );
-    }
-
-    reply.raw.setHeader('Set-Cookie', clearHeaders);
+    reply.clearCookie('access_token', getCookieOptions());
+    reply.clearCookie('refresh_token', getCookieOptions());
 
     return reply.status(200).send({
       success: true,
       code: "LOGOUT_SUCCESS",
-      message: "Ä Äƒng xuáº¥t thÃ nh cÃ´ng",
+      message: "ÄÄƒng xuáº¥t thÃ� nh cÃ´ng",
     });
   } catch (error) {
     logger.error("Lá»—i há»‡ thá»‘ng trong controller Ä‘Äƒng xuáº¥t:", error);

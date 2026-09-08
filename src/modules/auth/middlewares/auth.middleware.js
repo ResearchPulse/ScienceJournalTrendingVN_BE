@@ -10,9 +10,8 @@ export const requireAuth = async (request, reply) => {
     const authHeader = request.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) {
       token = authHeader.split(' ')[1];
-    } else if (request.cookies) {
-      // Ưu tiên cookie riêng của vn ('access_token'), fallback sang cookie SSO của cha ('sso_access_token')
-      token = request.cookies.access_token || request.cookies.sso_access_token;
+    } else if (request.cookies?.access_token) {
+      token = request.cookies.access_token;
     }
 
     if (!token) {
@@ -47,9 +46,8 @@ export const verifyToken = async (request, reply) => {
     accessToken = authHeader.split(' ')[1];
   }
 
-  // Ưu tiên cookie riêng của vn ('access_token'), fallback sang cookie SSO của cha ('sso_access_token')
   if (!accessToken && request.cookies) {
-    accessToken = request.cookies.access_token || request.cookies.sso_access_token;
+    accessToken = request.cookies.access_token;
   }
 
   if (!accessToken) {
