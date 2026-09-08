@@ -1,22 +1,31 @@
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import logger from '../../../utils/logger.js';
+import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
 
 export const requireAuth = async (request, reply) => {
   try {
+    let token = null;
     const authHeader = request.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (request.cookies) {
+      // Ưu tiên cookie riêng của vn ('access_token'), fallback sang cookie SSO của cha ('sso_access_token')
+      token = request.cookies.access_token || request.cookies.sso_access_token;
+    }
+
+    if (!token) {
       return reply.status(401).send({
         success: false,
-        message: 'Không tìm thấy token xác thực hoặc token không hợp lệ'
+        message: 'KhÃ´ng tÃ¬m tháº¥y token xÃ¡c thá»±c hoáº·c token khÃ´ng há»£p lá»‡'
       });
     }
 
-    const token = authHeader.split(' ')[1];
     if (!process.env.JWT_SECRET) {
       return reply.status(500).send({
         success: false,
-        message: 'Lỗi cấu hình JWT trên server'
+        message: 'Lá»—i cáº¥u hÃ¬nh JWT trÃªn server'
       });
     }
 
@@ -25,7 +34,7 @@ export const requireAuth = async (request, reply) => {
   } catch (error) {
     return reply.status(401).send({
       success: false,
-      message: 'Token xác thực không hợp lệ hoặc đã hết hạn'
+      message: 'Token xÃ¡c thá»±c khÃ´ng há»£p lá»‡ hoáº·c Ä‘Ã£ háº¿t háº¡n'
     });
   }
 };
@@ -38,26 +47,78 @@ export const verifyToken = async (request, reply) => {
     accessToken = authHeader.split(' ')[1];
   }
 
+  // Ưu tiên cookie riêng của vn ('access_token'), fallback sang cookie SSO của cha ('sso_access_token')
   if (!accessToken && request.cookies) {
-    accessToken = request.cookies.access_token;
+    accessToken = request.cookies.access_token || request.cookies.sso_access_token;
   }
 
   if (!accessToken) {
     return reply.status(401).send({
       success: false,
       code: "ACCESS_TOKEN_MISSING",
-      message: "Bạn chưa đăng nhập hoặc phiên l� m việc đã hết hạn"
+      message: "Báº¡n chÆ°a Ä‘Äƒng nháº­p hoáº·c phiÃªn lÃ m viá»‡c Ä‘Ã£ háº¿t háº¡n"
     });
   }
 
   try {
     const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
-    request.user = decoded; 
+
+    // TÃ¬m user trong DB local cá»§a vn theo user_id hoáº·c email
+    let user = null;
+    if (decoded.user_id) {
+      user = await prisma.user.findUnique({
+        where: { user_id: decoded.user_id }
+      });
+    }
+
+    if (!user && decoded.email) {
+      user = await prisma.user.findUnique({
+        where: { email: decoded.email }
+      });
+    }
+
+    // JIT Provisioning: Náº¿u token há»£p lá»‡ tá»« domain cha nhÆ°ng chÆ°a cÃ³ trong DB cá»§a vn -> tá»± Ä‘á»™ng táº¡o
+    if (!user && decoded.email) {
+      try {
+        user = await prisma.user.create({
+          data: {
+            user_id: crypto.randomUUID(),
+            email: decoded.email,
+            first_name: decoded.first_name || decoded.name || null,
+            last_name: decoded.last_name || null,
+            role: 'STUDENT',
+            status: 'ACTIVE',
+            type: 'LOCAL'
+          }
+        });
+        logger.info(`[SSO JIT Provisioning]: Tá»± Ä‘á»™ng táº¡o user má»›i ${decoded.email} tá»« SSO Token.`);
+      } catch (createErr) {
+        user = await prisma.user.findUnique({
+          where: { email: decoded.email }
+        });
+        if (!user) throw createErr;
+      }
+    }
+
+    if (user && user.status === 'BANNED') {
+      return reply.status(403).send({
+        success: false,
+        code: "USER_BANNED",
+        message: "TÃ i khoáº£n cá»§a báº¡n Ä‘Ã£ bá»‹ khÃ³a"
+      });
+    }
+
+    request.user = {
+      ...decoded,
+      user_id: user ? user.user_id : decoded.user_id,
+      role: user ? user.role : (decoded.role || 'STUDENT'),
+      email: user ? user.email : decoded.email
+    };
   } catch (error) {
     return reply.status(401).send({
       success: false,
       code: "ACCESS_TOKEN_EXPIRED",
-      message: "Access token không hợp lệ hoặc đã hết hạn"
+      message: "Access token khÃ´ng há»£p lá»‡ hoáº·c Ä‘Ã£ háº¿t háº¡n"
     });
   }
 };
@@ -66,7 +127,7 @@ export const verifyAdmin = async (request, reply) => {
   if (!request.user) {
     return reply.status(401).send({
       success: false,
-      message: 'Xác thực không th� nh công, không tìm thấy thông tin người dùng.',
+      message: 'Xác thực không th� nh công, không tìm thấy thông tin người dùng.',
       code: 'UNAUTHENTICATED'
     });
   }
@@ -77,12 +138,12 @@ export const verifyAdmin = async (request, reply) => {
       userRole: request.user.role,
       action: 'SYSTEM',
       level: 'WARNING',
-      message: `T� i khoản ${request.user.email} cố gắng truy cập t� i nguyên Admin (Bị từ chối)`,
+      message: `T� i khoản ${request.user.email} cố gắng truy cập t� i nguyên Admin (Bị từ chối)`,
       metadata: { ip: request.ip, path: request.url }
     });
     return reply.status(403).send({
       success: false,
-      message: 'Bạn không có quyền truy cập t� i nguyên n� y',
+      message: 'Bạn không có quyền truy cập t� i nguyên n� y',
       code: 'NO_PERMISSION'
     });
   }
