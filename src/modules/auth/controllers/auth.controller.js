@@ -1,14 +1,13 @@
 import { loginWithEmailPassword, signRefreshToken, signToken } from '../services/login.service.js';
 import { registerWithEmailPassword, activateAccount, resendActivationEmail } from '../services/register.service.js';
 import logger from '../../../utils/logger.js';
-import jwt from 'jsonwebtoken';
-import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
 import { isValidEmail } from '../../../utils/validation.js';
-import { getCookieOptions, getParentCookieClearOptions, getAuthCookieNames } from '../utils/authCookies.js';
-import { isParentToken, verifyAccessToken } from '../config/authTokens.js';
-
-export { getCookieOptions };
+import { verifyChildAccessToken, verifyChildRefreshToken } from '../config/authTokens.js';
+import { getAuthCookieNames, getAuthCookieOptions, getClearAuthCookieOptions } from '../utils/authCookies.js';
+import { bootstrapSso, createLogoutBlocker, inspectParentCookie } from '../services/sso.service.js';
+import { authUserRepository } from '../middlewares/auth.middleware.js';
+import { verifyBlocker } from '../services/sso.service.js';
 
 export const login = async (request, reply) => {
   try {
@@ -116,8 +115,7 @@ export const refreshToken = async (request, reply) => {
 
 export const checkAuth = async (request, reply) => {
   try {
-    const accessToken = request.cookies?.access_token
-      || request.cookies?.[getAuthCookieNames?.()?.access]
+    const accessToken = request.cookies?.[getAuthCookieNames().access]
       || request.headers.authorization?.replace(/^Bearer\s+/i, '');
 
     if (!accessToken) {
@@ -129,47 +127,25 @@ export const checkAuth = async (request, reply) => {
       });
     }
 
-    const decoded = verifyAccessToken(accessToken);
-
-    if (isParentToken(decoded)) {
-      const parentUser = {
-        user_id: decoded.user_id || decoded.userId || decoded.id || decoded.sub || '',
-        email: decoded.email || decoded.username || '',
-        role: decoded.role || 'USER',
-        auth_source: 'parent_sso',
-      };
-
-      return reply.status(200).send({
-        success: true,
-        authenticated: true,
-        user: parentUser,
-        data: parentUser,
-        access_token: accessToken,
-      });
-    }
-
-    const user = await prisma.user.findUnique({
-      where: { user_id: decoded.user_id },
-      select: { user_id: true, email: true, role: true, status: true },
-    });
-
+    const decoded = verifyChildAccessToken(accessToken);
+    const user = await authUserRepository.findById(decoded.user_id);
     if (!user || user.status !== 'ACTIVE') {
       return reply.status(403).send({ success: false, authenticated: false, code: 'ACCOUNT_UNAVAILABLE' });
     }
-
-    const localUser = {
-      user_id: user.user_id,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-    };
-
+    if (decoded.auth_source === 'parent_sso' && decoded.parent_fingerprint) {
+      const blocker = verifyBlocker(request.cookies?.[getAuthCookieNames().blocker]);
+      if (blocker?.fingerprint === decoded.parent_fingerprint) {
+        return reply.status(409).send({ success: false, authenticated: false, code: 'SSO_BLOCKED' });
+      }
+    }
     return reply.status(200).send({
       success: true,
       authenticated: true,
-      user: localUser,
-      data: localUser,
-      access_token: accessToken,
+      data: {
+        user_id: user.user_id,
+        email: user.email,
+        role: user.role,
+      },
     });
 
   } catch (error) {
@@ -184,15 +160,20 @@ export const checkAuth = async (request, reply) => {
 
 export const logout = async (request, reply) => {
   try {
-    // 1. Xóa cookie cục bộ của subdomain con
-    const localClearOptions = getCookieOptions();
-    reply.clearCookie('access_token', localClearOptions);
-    reply.clearCookie('refresh_token', localClearOptions);
-
-    // 2. Xóa cookie của domain cha (.hyperdatalab.org)
-    const parentClearOptions = getParentCookieClearOptions();
-    reply.clearCookie('access_token', parentClearOptions);
-    reply.clearCookie('refresh_token', parentClearOptions);
+    const cookieNames = getAuthCookieNames();
+    reply.clearCookie(cookieNames.access, getClearAuthCookieOptions());
+    reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
+    const parentToken = inspectParentCookie(request);
+    if (parentToken) {
+      try {
+        const blocker = createLogoutBlocker(parentToken);
+        reply.setCookie(cookieNames.blocker, blocker.value, getAuthCookieOptions('access', {
+          maxAge: Math.max(1, blocker.exp - Math.floor(Date.now() / 1000)),
+        }));
+      } catch {
+        // Invalid/expired parent cookie must not prevent child logout.
+      }
+    }
 
     return reply.status(200).send({
       success: true,

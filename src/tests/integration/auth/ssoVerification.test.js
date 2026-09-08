@@ -1,132 +1,63 @@
-import { describe, test } from 'node:test';
+import { describe, test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import jwt from 'jsonwebtoken';
 
-import { verifyToken, requireAuth } from '../../../modules/auth/middlewares/auth.middleware.js';
-import { checkAuth } from '../../../modules/auth/controllers/auth.controller.js';
-
 process.env.NODE_ENV = 'test';
-process.env.JWT_SECRET = 'shared-cross-domain-secret-test';
+process.env.PARENT_JWT_SECRET = 'parent-secret';
+process.env.VN_JWT_SECRET = 'child-secret';
+process.env.VN_JWT_REFRESH_SECRET = 'refresh-secret';
+process.env.VN_SSO_BLOCK_SECRET = 'block-secret';
 
-const buildTestApp = async () => {
+const localUser = { user_id: 'child-user-1', email: 'user@example.com', role: 'STUDENT', status: 'ACTIVE', type: null };
+mock.module('../../../modules/auth/repositories/sso.repository.js', {
+  namedExports: {
+    normalizeEmail: (email) => email.trim().toLowerCase(),
+    findUsersByNormalizedEmail: async () => [localUser],
+    createJitUser: async () => localUser,
+  },
+});
+
+const { checkAuth, ssoBootstrap } = await import('../../../modules/auth/controllers/auth.controller.js');
+const { getAuthCookieNames } = await import('../../../modules/auth/utils/authCookies.js');
+
+const buildApp = async () => {
   const app = Fastify();
   await app.register(cookie);
-
-  // Route bảo vệ sử dụng verifyToken middleware
-  app.get('/api/protected/profile', { preHandler: [verifyToken] }, async (request, reply) => {
-    return reply.send({
-      success: true,
-      user: request.user,
-    });
-  });
-
-  // Route check-auth
-  app.get('/api/auth/check-auth', checkAuth);
-
+  app.get('/auth/check-auth', checkAuth);
+  app.post('/auth/sso/bootstrap', ssoBootstrap);
   return app;
 };
 
-describe('cross-domain sso token verification', () => {
-  test('authenticates parent domain token statelessly without db lookup', async () => {
-    const app = await buildTestApp();
-
-    const parentPayload = {
-      user_id: 'parent-user-999',
-      email: 'researcher@hyperdatalab.org',
-      role: 'ADMINISTRATOR',
-      domain: 'hyperdatalab.org',
-    };
-
-    const parentToken = jwt.sign(parentPayload, process.env.JWT_SECRET, { expiresIn: '1h' });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/protected/profile',
-      cookies: {
-        access_token: parentToken,
-      },
-    });
+describe('parent-to-child SSO exchange', () => {
+  test('bootstrap maps verified parent email to local user and sets an isolated child cookie', async () => {
+    const app = await buildApp();
+    const parentToken = jwt.sign({ email: 'USER@example.com', role: 'ADMINISTRATOR' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({ method: 'POST', url: '/auth/sso/bootstrap', cookies: { access_token: parentToken } });
 
     assert.equal(response.statusCode, 200);
-    const body = response.json();
-    assert.equal(body.success, true);
-    assert.equal(body.user.user_id, 'parent-user-999');
-    assert.equal(body.user.email, 'researcher@hyperdatalab.org');
-    assert.equal(body.user.role, 'ADMINISTRATOR');
-    assert.equal(body.user.auth_source, 'parent_sso');
+    assert.deepEqual(response.json().data, { user_id: 'child-user-1', email: 'user@example.com', role: 'STUDENT' });
+    assert.equal(response.json().access_token, undefined);
+    assert.match([].concat(response.headers['set-cookie']).join(';'), new RegExp(`${getAuthCookieNames().access}=`));
+    await app.close();
   });
 
-  test('checkAuth returns authenticated true with decoded user for parent token', async () => {
-    const app = await buildTestApp();
-
-    const parentPayload = {
-      user_id: 'parent-user-888',
-      email: 'scientist@hyperdatalab.org',
-      role: 'USER',
-      domain: 'hyperdatalab.org',
-    };
-
-    const parentToken = jwt.sign(parentPayload, process.env.JWT_SECRET, { expiresIn: '1h' });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/auth/check-auth',
-      cookies: {
-        access_token: parentToken,
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    const body = response.json();
-    assert.equal(body.success, true);
-    assert.equal(body.authenticated, true);
-    assert.equal(body.user.email, 'scientist@hyperdatalab.org');
-  });
-
-  test('authenticates real-world parent token without domain or iss claim', async () => {
-    const app = await buildTestApp();
-
-    const realParentPayload = {
-      user_id: '01b37976-d13a-4713-8ba7-a8e078494a25',
-      role: 'INUETE9',
-      email: 'cubinvinh@gmail.com',
-    };
-
-    const token = jwt.sign(realParentPayload, process.env.JWT_SECRET, { expiresIn: '1h' });
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/auth/check-auth',
-      cookies: {
-        access_token: token,
-      },
-    });
-
-    assert.equal(response.statusCode, 200);
-    const body = response.json();
-    assert.equal(body.authenticated, true);
-    assert.equal(body.user.email, 'cubinvinh@gmail.com');
-    assert.equal(body.data.user_id, '01b37976-d13a-4713-8ba7-a8e078494a25');
-  });
-
-  test('rejects expired or invalid signature tokens', async () => {
-    const app = await buildTestApp();
-
-    const fakeToken = jwt.sign(
-      { user_id: 'fake', domain: 'hyperdatalab.org' },
-      'wrong-secret-signature'
-    );
-
-    const response = await app.inject({
-      method: 'GET',
-      url: '/api/protected/profile',
-      cookies: {
-        access_token: fakeToken,
-      },
-    });
-
+  test('read-only check-auth rejects a parent token until it is exchanged', async () => {
+    const app = await buildApp();
+    const parentToken = jwt.sign({ email: 'user@example.com' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({ method: 'GET', url: '/auth/check-auth', cookies: { access_token: parentToken } });
     assert.equal(response.statusCode, 401);
+    assert.equal(response.json().authenticated, false);
+    await app.close();
+  });
+
+  test('bootstrap rejects a token signed with the child secret', async () => {
+    const app = await buildApp();
+    const forged = jwt.sign({ email: 'user@example.com', role: 'ADMINISTRATOR' }, process.env.VN_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({ method: 'POST', url: '/auth/sso/bootstrap', cookies: { access_token: forged } });
+    assert.equal(response.statusCode, 401);
+    assert.equal(response.json().authenticated, false);
+    await app.close();
   });
 });

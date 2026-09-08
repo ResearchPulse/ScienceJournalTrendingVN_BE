@@ -1,62 +1,40 @@
 import { afterEach, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-
-import {
-  getAuthCookieNames,
-  getCookieOptions,
-  getClearAuthCookieOptions,
-  getParentCookieClearOptions,
-  ACCESS_TOKEN_COOKIE,
-  REFRESH_TOKEN_COOKIE,
-} from '../../../modules/auth/utils/authCookies.js';
+import { getAuthCookieNames, getAuthCookieOptions, getClearAuthCookieOptions } from '../../../modules/auth/utils/authCookies.js';
 
 const originalEnv = { ...process.env };
+afterEach(() => { process.env = { ...originalEnv }; });
 
-afterEach(() => {
-  process.env = { ...originalEnv };
-});
-
-describe('auth cookie contracts', () => {
-  test('standard cookie names are access_token and refresh_token', () => {
+describe('isolated child cookie contracts', () => {
+  test('production uses unique host-only __Host cookies', () => {
+    process.env.NODE_ENV = 'production';
     const names = getAuthCookieNames();
     assert.deepEqual(names, {
-      access: ACCESS_TOKEN_COOKIE,
-      refresh: REFRESH_TOKEN_COOKIE,
+      access: '__Host-vn_access_token',
+      refresh: '__Host-vn_refresh_token',
+      blocker: '__Host-vn_sso_block',
     });
-    assert.equal(names.access, 'access_token');
-    assert.equal(names.refresh, 'refresh_token');
-  });
-
-  test('production cookie options for child use secure and proper attributes', () => {
-    process.env.NODE_ENV = 'production';
-    process.env.COOKIE_DOMAIN = 'vn.hyperdatalab.org';
-    const options = getCookieOptions();
-
+    const options = getAuthCookieOptions('access');
     assert.equal(options.httpOnly, true);
     assert.equal(options.secure, true);
-    assert.equal(options.sameSite, 'none');
-    assert.equal(options.path, '/');
-    assert.equal(options.domain, 'vn.hyperdatalab.org');
-  });
-
-  test('development cookie options do not restrict cross-site when not in production', () => {
-    process.env.NODE_ENV = 'development';
-    delete process.env.COOKIE_DOMAIN;
-    const options = getCookieOptions();
-
-    assert.equal(options.httpOnly, true);
-    assert.equal(options.secure, false);
     assert.equal(options.sameSite, 'lax');
     assert.equal(options.path, '/');
     assert.equal('domain' in options, false);
   });
 
-  test('parent clear options target wildcard domain .hyperdatalab.org', () => {
-    process.env.NODE_ENV = 'production';
-    const clearOptions = getParentCookieClearOptions();
+  test('development names cannot collide with parent cookies', () => {
+    process.env.NODE_ENV = 'development';
+    const names = getAuthCookieNames();
+    assert.notEqual(names.access, 'access_token');
+    assert.notEqual(names.refresh, 'refresh_token');
+    assert.notEqual(names.blocker, 'sso_block');
+  });
 
-    assert.equal(clearOptions.domain, '.hyperdatalab.org');
-    assert.equal(clearOptions.path, '/');
-    assert.equal(clearOptions.httpOnly, true);
+  test('clear options preserve the host-only scope', () => {
+    process.env.NODE_ENV = 'production';
+    const options = getClearAuthCookieOptions();
+    assert.equal(options.secure, true);
+    assert.equal(options.path, '/');
+    assert.equal('domain' in options, false);
   });
 });
