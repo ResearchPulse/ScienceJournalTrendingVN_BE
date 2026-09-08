@@ -1,87 +1,145 @@
+import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import logger from '../../../utils/logger.js';
 import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
-import { verifyChildAccessToken } from '../config/authTokens.js';
-import { getAuthCookieNames } from '../utils/authCookies.js';
-import { verifyBlocker } from '../services/sso.service.js';
-
-const reject = (reply, statusCode, code, message) => reply.status(statusCode).send({
-  success: false,
-  ...(code ? { code } : {}),
-  message,
-});
+import { isParentToken } from '../config/authTokens.js';
 
 export const authUserRepository = {
-  findById: (userId) => prisma.user.findUnique({
-    where: { user_id: userId },
-    select: { user_id: true, email: true, role: true, status: true, type: true },
-  }),
-};
-
-const attachCurrentUser = async (request, reply, decoded) => {
-  const user = await authUserRepository.findById(decoded.user_id);
-  if (!user || user.status !== 'ACTIVE') {
-    reject(reply, 403, 'ACCOUNT_UNAVAILABLE', 'Tài khoản không còn hoạt động');
-    return false;
-  }
-
-  if (decoded.auth_source === 'parent_sso' && decoded.parent_fingerprint) {
-    const blocker = verifyBlocker(request.cookies?.[getAuthCookieNames().blocker]);
-    if (blocker?.fingerprint === decoded.parent_fingerprint) {
-      reject(reply, 401, 'SSO_BLOCKED', 'SSO session was ended on this child system');
-      return false;
-    }
-  }
-
-  request.user = {
-    ...decoded,
-    user_id: user.user_id,
-    email: user.email,
-    role: user.role,
-    status: user.status,
-    type: user.type,
-  };
-  return true;
-};
-
-const tokenFromRequest = (request) => {
-  const authHeader = request.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7).trim();
-  return request.cookies?.[getAuthCookieNames().access] || null;
+  findById: (id) => prisma.user.findUnique({ where: { user_id: id } }),
+  findByEmail: (email) => prisma.user.findUnique({ where: { email } }),
 };
 
 export const requireAuth = async (request, reply) => {
-  const token = tokenFromRequest(request);
-  if (!token) return reject(reply, 401, 'ACCESS_TOKEN_MISSING', 'Không tìm thấy token xác thực');
   try {
-    const decoded = verifyChildAccessToken(token);
-    await attachCurrentUser(request, reply, decoded);
+    let token = null;
+    const authHeader = request.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (request.cookies?.access_token) {
+      token = request.cookies.access_token;
+    }
+
+    if (!token) {
+      return reply.status(401).send({
+        success: false,
+        message: 'Khong tim thay token xac thuc hoac token khong hop le'
+      });
+    }
+
+    if (!process.env.JWT_SECRET) {
+      return reply.status(500).send({
+        success: false,
+        message: 'Loi cau hinh JWT tren server'
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    request.user = {
+      ...decoded,
+      auth_source: isParentToken(decoded) ? 'parent_sso' : 'child_local',
+    };
   } catch (error) {
-    if (!reply.sent) reject(reply, 401, 'ACCESS_TOKEN_INVALID', 'Token xác thực không hợp lệ hoặc đã hết hạn');
+    return reply.status(401).send({
+      success: false,
+      message: 'Token xac thuc khong hop le hoac da het han'
+    });
   }
 };
 
 export const verifyToken = async (request, reply) => {
-  const token = tokenFromRequest(request);
-  if (!token) return reject(reply, 401, 'ACCESS_TOKEN_MISSING', 'Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn');
+  let accessToken = null;
+
+  const authHeader = request.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    accessToken = authHeader.split(' ')[1];
+  }
+
+  if (!accessToken && request.cookies) {
+    accessToken = request.cookies.access_token;
+  }
+
+  if (!accessToken) {
+    return reply.status(401).send({
+      success: false,
+      code: "ACCESS_TOKEN_MISSING",
+      message: "Ban chua dang nhap hoac phien lam viec da het han"
+    });
+  }
+
   try {
-    const decoded = verifyChildAccessToken(token);
-    await attachCurrentUser(request, reply, decoded);
+    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+
+    // Stateless Verification cho token do he thong cha (hyperdatalab.org) phat hanh
+    // Khong truy van DB noi bo, gan thang du lieu vao request.user
+    if (isParentToken(decoded)) {
+      request.user = {
+        ...decoded,
+        user_id: decoded.user_id,
+        role: decoded.role || 'STUDENT',
+        email: decoded.email,
+        auth_source: 'parent_sso',
+        domain: decoded.domain || decoded.iss || 'hyperdatalab.org',
+      };
+      return;
+    }
+
+    // Doi voi token do site con cap: kiem tra trong DB noi bo
+    let user = null;
+    if (decoded.user_id) {
+      user = await authUserRepository.findById(decoded.user_id);
+    }
+
+    if (!user && decoded.email) {
+      user = await authUserRepository.findByEmail(decoded.email);
+    }
+
+    if (user && user.status !== 'ACTIVE') {
+      return reply.status(403).send({
+        success: false,
+        code: "ACCOUNT_UNAVAILABLE",
+        message: "Tai khoan cua ban da bi khoa hoac chua duoc kich hoat"
+      });
+    }
+
+    request.user = {
+      ...decoded,
+      user_id: user ? user.user_id : decoded.user_id,
+      role: user ? user.role : (decoded.role || 'STUDENT'),
+      email: user ? user.email : decoded.email,
+      auth_source: 'child_local',
+    };
   } catch (error) {
-    if (!reply.sent) reject(reply, 401, 'ACCESS_TOKEN_INVALID', 'Access token không hợp lệ hoặc đã hết hạn');
+    return reply.status(401).send({
+      success: false,
+      code: "ACCESS_TOKEN_EXPIRED",
+      message: "Access token khong hop le hoac da het han"
+    });
   }
 };
 
 export const verifyAdmin = async (request, reply) => {
-  if (!request.user) return reject(reply, 401, 'UNAUTHENTICATED', 'Xác thực không thành công');
+  if (!request.user) {
+    return reply.status(401).send({
+      success: false,
+      message: 'Xac thuc khong thanh cong, khong tim thay thong tin nguoi dung.',
+      code: 'UNAUTHENTICATED'
+    });
+  }
+
   if (request.user.role !== 'ADMINISTRATOR') {
-    await createLog({
+    createLog({
       userId: request.user.user_id,
       userRole: request.user.role,
       action: 'SYSTEM',
       level: 'WARNING',
-      message: `Tài khoản ${request.user.email} cố gắng truy cập tài nguyên Admin`,
-      metadata: { ip: request.ip, path: request.url },
+      message: `Tai khoan ${request.user.email} co gang truy cap tai nguyen Admin (Bi tu choi)`,
+      metadata: { ip: request.ip, path: request.url }
     });
-    return reject(reply, 403, 'NO_PERMISSION', 'Bạn không có quyền truy cập tài nguyên này');
+    return reply.status(403).send({
+      success: false,
+      message: 'Ban khong co quyen truy cap tai nguyen nay',
+      code: 'NO_PERMISSION'
+    });
   }
 };

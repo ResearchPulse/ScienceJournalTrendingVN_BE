@@ -1,83 +1,112 @@
 import jwt from 'jsonwebtoken';
 
+export const PARENT_DOMAIN = 'hyperdatalab.org';
+export const CHILD_DOMAIN = 'vn.hyperdatalab.org';
 export const CHILD_ACCESS_ISSUER = 'vietnam-api.hyperdatalab.org';
 export const CHILD_ACCESS_AUDIENCE = 'vn.hyperdatalab.org';
 
-const requiredSecret = (name, legacyName) => {
-  const value = process.env[name]?.trim();
-  if (value) return value;
+/**
+ * Kiem tra xem token payload co phai duoc phat hanh boi he thong cha (hyperdatalab.org) hay khong
+ * @param {Object} decoded - Payload da giai ma cua JWT
+ * @returns {boolean}
+ */
+export const isParentToken = (decoded) => {
+  if (!decoded) return false;
+  return decoded.domain === PARENT_DOMAIN || decoded.iss === PARENT_DOMAIN;
+};
 
-  if (process.env.NODE_ENV !== 'production' && legacyName) {
-    const legacyValue = process.env[legacyName]?.trim();
-    if (legacyValue) return legacyValue;
+/**
+ * Lay JWT Secret chung cho he thong
+ */
+export const getJwtSecret = () => {
+  const secret = process.env.JWT_SECRET || process.env.VN_JWT_SECRET || process.env.PARENT_JWT_SECRET;
+  if (!secret) {
+    throw new Error('Missing JWT_SECRET in environment variables');
   }
-
-  throw new Error(`Missing ${name} in environment variables`);
+  return secret;
 };
 
-export const getChildAccessSecret = () => requiredSecret('VN_JWT_SECRET', 'JWT_SECRET');
-export const getChildRefreshSecret = () => requiredSecret('VN_JWT_REFRESH_SECRET', 'JWT_REFRESH_SECRET');
-export const getParentAccessSecret = () => requiredSecret('PARENT_JWT_SECRET');
-export const getSsoBlockSecret = () => requiredSecret('VN_SSO_BLOCK_SECRET');
+export const getChildAccessSecret = () => process.env.VN_JWT_SECRET || getJwtSecret();
+export const getChildRefreshSecret = () => process.env.VN_JWT_REFRESH_SECRET || process.env.JWT_REFRESH_SECRET || getJwtSecret();
+export const getParentAccessSecret = () => process.env.PARENT_JWT_SECRET || getJwtSecret();
+export const getSsoBlockSecret = () => process.env.VN_SSO_BLOCK_SECRET || getJwtSecret();
 
-const childBaseOptions = {
-  algorithm: 'HS256',
-  issuer: CHILD_ACCESS_ISSUER,
-  audience: CHILD_ACCESS_AUDIENCE,
+/**
+ * Xac minh access token voi JWT_SECRET
+ * @param {string} token
+ * @returns {Object} decoded payload
+ */
+export const verifyAccessToken = (token) => {
+  const secret = getJwtSecret();
+  return jwt.verify(token, secret, { algorithms: ['HS256'] });
 };
 
-export const signChildAccessToken = (user, options = {}) => jwt.sign(
-  {
-    user_id: user.user_id,
-    email: user.email,
-    role: user.role,
-    token_use: 'access',
-    ...(user.auth_source ? { auth_source: user.auth_source } : {}),
-    ...(user.parent_fingerprint ? { parent_fingerprint: user.parent_fingerprint } : {}),
-  },
-  getChildAccessSecret(),
-  {
-    ...childBaseOptions,
-    expiresIn: options.expiresIn || process.env.JWT_EXPIRES_IN || '1d',
-  },
-);
-
-const verifyChildToken = (token, secret, expectedUse) => {
-  const decoded = jwt.verify(token, secret, {
-    algorithms: ['HS256'],
-    issuer: CHILD_ACCESS_ISSUER,
-    audience: CHILD_ACCESS_AUDIENCE,
-  });
-  if (decoded.token_use !== expectedUse) throw new Error(`Unexpected token_use: ${decoded.token_use}`);
-  return decoded;
+/**
+ * Ky token moi cho site con vn.hyperdatalab.org
+ * @param {Object} user
+ * @param {Object} extra
+ */
+export const signChildAccessToken = (user, extra = {}) => {
+  const secret = getJwtSecret();
+  return jwt.sign(
+    {
+      user_id: user.user_id,
+      email: user.email,
+      role: user.role,
+      domain: process.env.COOKIE_DOMAIN?.replace(/^\./, '') || CHILD_DOMAIN,
+      token_use: 'access',
+      ...extra,
+    },
+    secret,
+    {
+      algorithm: 'HS256',
+      expiresIn: process.env.JWT_EXPIRES_IN || '1d',
+    }
+  );
 };
 
-export const verifyChildAccessToken = (token) => verifyChildToken(token, getChildAccessSecret(), 'access');
+export const signChildRefreshToken = (user, extra = {}) => {
+  const secret = process.env.JWT_REFRESH_SECRET || process.env.VN_JWT_REFRESH_SECRET || getJwtSecret();
+  return jwt.sign(
+    {
+      user_id: user.user_id,
+      email: user.email,
+      role: user.role,
+      domain: process.env.COOKIE_DOMAIN?.replace(/^\./, '') || CHILD_DOMAIN,
+      token_use: 'refresh',
+      ...extra,
+    },
+    secret,
+    {
+      algorithm: 'HS256',
+      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
+    }
+  );
+};
 
-export const signChildRefreshToken = (user, options = {}) => jwt.sign(
-  {
-    user_id: user.user_id,
-    email: user.email,
-    role: user.role,
-    token_use: 'refresh',
-  },
-  getChildRefreshSecret(),
-  {
-    ...childBaseOptions,
-    expiresIn: options.expiresIn || process.env.JWT_REFRESH_EXPIRES_IN || '30d',
-  },
-);
+export const verifyChildAccessToken = (token) => {
+  return verifyAccessToken(token);
+};
 
-export const verifyChildRefreshToken = (token) => verifyChildToken(token, getChildRefreshSecret(), 'refresh');
+export const verifyChildRefreshToken = (token) => {
+  const secret = process.env.JWT_REFRESH_SECRET || process.env.VN_JWT_REFRESH_SECRET || getJwtSecret();
+  return jwt.verify(token, secret, { algorithms: ['HS256'] });
+};
 
-export const signActivationToken = (user) => jwt.sign(
-  { user_id: user.user_id, email: user.email, token_use: 'activation' },
-  getChildAccessSecret(),
-  { ...childBaseOptions, expiresIn: '24h' },
-);
+export const signActivationToken = (user) => {
+  const secret = getJwtSecret();
+  return jwt.sign(
+    { user_id: user.user_id, email: user.email, token_use: 'activation' },
+    secret,
+    { algorithm: 'HS256', expiresIn: '24h' }
+  );
+};
 
-export const verifyActivationToken = (token) => verifyChildToken(token, getChildAccessSecret(), 'activation');
+export const verifyActivationToken = (token) => {
+  const secret = getJwtSecret();
+  return jwt.verify(token, secret, { algorithms: ['HS256'] });
+};
 
-export const verifyParentAccessToken = (token) => jwt.verify(token, getParentAccessSecret(), {
-  algorithms: ['HS256'],
-});
+export const verifyParentAccessToken = (token) => {
+  return verifyAccessToken(token);
+};

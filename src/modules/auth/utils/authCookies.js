@@ -1,49 +1,58 @@
-const COOKIE_NAMES = {
-  production: {
-    access: '__Host-vn_access_token',
-    refresh: '__Host-vn_refresh_token',
-    blocker: '__Host-vn_sso_block',
-  },
-  development: {
-    access: 'vn_access_token_dev',
-    refresh: 'vn_refresh_token_dev',
-    blocker: 'vn_sso_block_dev',
-  },
-};
+﻿export const ACCESS_TOKEN_COOKIE = 'access_token';
+export const REFRESH_TOKEN_COOKIE = 'refresh_token';
 
-const defaultMaxAge = {
-  access: 86400,
-  refresh: 604800,
-};
+/**
+ * Danh sach ten cookie chuan dung cho ca cha va con
+ */
+export const getAuthCookieNames = () => ({
+  access: ACCESS_TOKEN_COOKIE,
+  refresh: REFRESH_TOKEN_COOKIE,
+});
 
-const configuredMaxAge = (kind) => {
-  const envName = kind === 'refresh' ? 'COOKIE_REFRESH_MAX_AGE' : 'COOKIE_ACCESS_MAX_AGE';
-  const parsed = Number(process.env[envName]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultMaxAge[kind];
-};
+/**
+ * Cookie options cho subdomain con (vn.hyperdatalab.org hoac localhost)
+ * @param {Object} extra - Cac options mo rong (maxAge, domain, ...)
+ */
+export const getCookieOptions = (extra = {}) => {
+  const isProd = process.env.NODE_ENV?.trim() === 'production';
+  const cookieDomain = process.env.COOKIE_DOMAIN?.trim();
 
-export const getAuthCookieNames = () => (
-  process.env.NODE_ENV === 'production' ? COOKIE_NAMES.production : COOKIE_NAMES.development
-);
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    path: '/',
+    ...(cookieDomain ? { domain: cookieDomain } : {}),
+    ...extra,
+  };
+};
 
 export const getAuthCookieOptions = (kind, overrides = {}) => {
-  const options = {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
-    path: '/',
-  };
-
-  if (kind === 'access' || kind === 'refresh') {
-    options.maxAge = configuredMaxAge(kind);
-  }
-
-  return { ...options, ...overrides };
+  return getCookieOptions(overrides);
 };
 
-export const getClearAuthCookieOptions = () => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
-  path: '/',
-});
+export const getChildCookieOptions = (kind = 'access', extra = {}) => {
+  return getCookieOptions(extra);
+};
+
+export const getClearAuthCookieOptions = (extra = {}) => {
+  return getCookieOptions(extra);
+};
+
+/**
+ * Cookie clear options cho domain cha (.hyperdatalab.org)
+ * Dung khi user nhan Logout tai site con de xoa session cua cha
+ */
+export const getParentCookieClearOptions = (extra = {}) => {
+  const isProd = process.env.NODE_ENV?.trim() === 'production';
+  const parentDomain = process.env.PARENT_COOKIE_DOMAIN?.trim() || '.hyperdatalab.org';
+
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    path: '/',
+    ...(isProd || parentDomain.startsWith('.') ? { domain: parentDomain } : {}),
+    ...extra,
+  };
+};
