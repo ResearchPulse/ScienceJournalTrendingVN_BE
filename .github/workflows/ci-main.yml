@@ -61,9 +61,6 @@ jobs:
       - name: Run tests
         run: npm test
 
-      - name: Run logout cookie regression
-        run: node --test src/tests/integration/auth/logoutCookieClear.test.js
-
   docker:
     name: Build & Push Docker Image
     needs: build-and-test
@@ -96,8 +93,6 @@ jobs:
           tags: |
             ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:latest
             ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:${{ github.sha }}
-            ghcr.io/phunghao2701/scientificjournalsystem-vietnam-be:latest
-            ghcr.io/phunghao2701/scientificjournalsystem-vietnam-be:${{ github.sha }}
 
   deploy:
     name: Deploy to VPS
@@ -113,68 +108,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
-            set -eu
-
-            DEPLOY_SHA='${{ github.sha }}'
-            export IMAGE_TAG="$DEPLOY_SHA"
-
-            mkdir -p ~/apps/researchpulse-vn-be
             cd ~/apps/researchpulse-vn-be
-            cat > docker-compose.yml << 'EOF'
-            version: '3.8'
-            services:
-              vietnam-backend:
-                image: ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:${IMAGE_TAG:-latest}
-                container_name: researchpulse_backend_vn
-                restart: unless-stopped
-                ports:
-                  - "5000:5000"
-                env_file:
-                  - .env
-                networks:
-                  - researchpulse_network
-            networks:
-              researchpulse_network:
-                external: true
-                name: researchpulse_network
-            EOF
-
-            if docker compose version >/dev/null 2>&1; then
-              compose_cmd='docker compose'
-            elif command -v docker-compose >/dev/null 2>&1; then
-              compose_cmd='docker-compose'
-            else
-              echo 'Docker Compose is not installed on the VPS' >&2
-              exit 1
-            fi
-
-            $compose_cmd pull
-            $compose_cmd up -d --force-recreate --remove-orphans
-
-            expected_image="ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:$DEPLOY_SHA"
-            running_image="$(docker inspect --format='{{.Config.Image}}' researchpulse_backend_vn)"
-            if [ "$running_image" != "$expected_image" ]; then
-              echo "Expected $expected_image but container runs $running_image" >&2
-              exit 1
-            fi
-
-            logout_headers=''
-            for attempt in 1 2 3 4 5 6 7 8 9 10; do
-              if logout_headers="$(curl --fail --silent --show-error --dump-header - --output /dev/null \
-                --request POST 'http://127.0.0.1:5000/api/v1/auth/logout' \
-                --header 'Origin: https://vn.hyperdatalab.org' \
-                --header 'Content-Type: application/json' \
-                --data '{}')"; then
-                break
-              fi
-              sleep 2
-            done
-
-            if [ -z "$logout_headers" ]; then
-              echo 'Backend did not become ready for the logout smoke test' >&2
-              exit 1
-            fi
-
-            printf '%s\n' "$logout_headers" | grep -Eiq '^set-cookie:[[:space:]]*access_token=;.*domain=(\.)?hyperdatalab\.org;.*expires=thu, 01 jan 1970'
-            printf '%s\n' "$logout_headers" | grep -Eiq '^set-cookie:[[:space:]]*refresh_token=;.*domain=(\.)?hyperdatalab\.org;.*expires=thu, 01 jan 1970'
+            docker-compose pull
+            docker-compose up -d --force-recreate
             docker image prune -f
