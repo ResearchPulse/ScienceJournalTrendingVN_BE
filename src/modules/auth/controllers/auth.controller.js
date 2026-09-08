@@ -166,14 +166,24 @@ export const checkAuth = async (request, reply) => {
 
 export const logout = async (request, reply) => {
   try {
+    // 1. Xóa cookie cục bộ tại host vn
     reply.clearCookie('access_token', getCookieOptions());
     reply.clearCookie('refresh_token', getCookieOptions());
     reply.clearCookie('sso_access_token', getCookieOptions());
 
+    // 2. Xóa kép cookie cấp root domain cha (.hyperdatalab.org) nếu đang ở production
+    const isProd = process.env.NODE_ENV?.trim() === 'production';
+    const parentDomain = process.env.COOKIE_PARENT_DOMAIN?.trim() || (isProd ? '.hyperdatalab.org' : undefined);
+    if (parentDomain) {
+      reply.clearCookie('access_token', getCookieOptions({ domain: parentDomain }));
+      reply.clearCookie('refresh_token', getCookieOptions({ domain: parentDomain }));
+      reply.clearCookie('sso_access_token', getCookieOptions({ domain: parentDomain }));
+    }
+
     return reply.status(200).send({
       success: true,
       code: "LOGOUT_SUCCESS",
-      message: "ÄÄƒng xuáº¥t thÃ� nh cÃ´ng",
+      message: "Ä Äƒng xuáº¥t thÃ nh cÃ´ng",
     });
   } catch (error) {
     logger.error("Lá»—i há»‡ thá»‘ng trong controller Ä‘Äƒng xuáº¥t:", error);
