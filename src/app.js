@@ -36,7 +36,24 @@ const buildApp = async () => {
   const app = Fastify({ logger: true });
 
   await app.register(cors, {
-    origin: process.env.FRONTEND_URL || true, // Báº­t cáº¥u hÃ¬nh cors cho Frontend
+    origin: (origin, cb) => {
+      if (!origin) return cb(null, true);
+      try {
+        const { hostname } = new URL(origin);
+        if (
+          hostname === 'localhost' ||
+          hostname === '127.0.0.1' ||
+          hostname === 'hyperdatalab.org' ||
+          hostname.endsWith('.hyperdatalab.org') ||
+          (process.env.FRONTEND_URL && origin.startsWith(process.env.FRONTEND_URL))
+        ) {
+          return cb(null, true);
+        }
+      } catch (e) {
+        // URL khong hop le
+      }
+      return cb(new Error('Not allowed by CORS'), false);
+    },
     credentials: true
   });
 
