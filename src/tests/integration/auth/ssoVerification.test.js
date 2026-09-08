@@ -85,6 +85,32 @@ describe('cross-domain sso token verification', () => {
     assert.equal(body.user.email, 'scientist@hyperdatalab.org');
   });
 
+  test('authenticates real-world parent token without domain or iss claim', async () => {
+    const app = await buildTestApp();
+
+    const realParentPayload = {
+      user_id: '01b37976-d13a-4713-8ba7-a8e078494a25',
+      role: 'INUETE9',
+      email: 'cubinvinh@gmail.com',
+    };
+
+    const token = jwt.sign(realParentPayload, process.env.JWT_SECRET, { expiresIn: '1h' });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/auth/check-auth',
+      cookies: {
+        access_token: token,
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json();
+    assert.equal(body.authenticated, true);
+    assert.equal(body.user.email, 'cubinvinh@gmail.com');
+    assert.equal(body.data.user_id, '01b37976-d13a-4713-8ba7-a8e078494a25');
+  });
+
   test('rejects expired or invalid signature tokens', async () => {
     const app = await buildTestApp();
 

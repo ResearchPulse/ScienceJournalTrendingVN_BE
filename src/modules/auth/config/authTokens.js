@@ -12,14 +12,17 @@ export const CHILD_ACCESS_AUDIENCE = 'vn.hyperdatalab.org';
  */
 export const isParentToken = (decoded) => {
   if (!decoded) return false;
-  return decoded.domain === PARENT_DOMAIN || decoded.iss === PARENT_DOMAIN;
+  if (decoded.domain === PARENT_DOMAIN || decoded.iss === PARENT_DOMAIN) return true;
+  // Bất kỳ token hợp lệ nào không mang domain của con -> là token cha phát hành
+  if (!decoded.domain || decoded.domain !== CHILD_DOMAIN) return true;
+  return false;
 };
 
 /**
  * Lay JWT Secret chung cho he thong
  */
 export const getJwtSecret = () => {
-  const secret = process.env.JWT_SECRET || process.env.VN_JWT_SECRET || process.env.PARENT_JWT_SECRET;
+  const secret = process.env.PARENT_JWT_SECRET || process.env.JWT_SECRET || process.env.VN_JWT_SECRET;
   if (!secret) {
     throw new Error('Missing JWT_SECRET in environment variables');
   }
@@ -32,13 +35,26 @@ export const getParentAccessSecret = () => process.env.PARENT_JWT_SECRET || getJ
 export const getSsoBlockSecret = () => process.env.VN_SSO_BLOCK_SECRET || getJwtSecret();
 
 /**
- * Xac minh access token voi JWT_SECRET
+ * Xac minh access token voi JWT_SECRET hoac PARENT_JWT_SECRET
  * @param {string} token
  * @returns {Object} decoded payload
  */
 export const verifyAccessToken = (token) => {
-  const secret = getJwtSecret();
-  return jwt.verify(token, secret, { algorithms: ['HS256'] });
+  const secrets = [
+    process.env.PARENT_JWT_SECRET,
+    process.env.JWT_SECRET,
+    process.env.VN_JWT_SECRET,
+  ].filter(Boolean);
+
+  let lastError;
+  for (const secret of secrets) {
+    try {
+      return jwt.verify(token, secret, { algorithms: ['HS256'] });
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('Missing JWT secret in environment variables');
 };
 
 /**
