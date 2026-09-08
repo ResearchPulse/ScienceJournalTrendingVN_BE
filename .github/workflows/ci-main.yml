@@ -101,6 +101,10 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      packages: read
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -116,43 +120,29 @@ jobs:
 
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.2.2
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: GHCR_USERNAME,GHCR_TOKEN
           script: |
             set -eu
             mkdir -p ~/apps/researchpulse-vn-be
             cd ~/apps/researchpulse-vn-be
 
-            cat > docker-compose.yml << 'EOF'
-            services:
-              vietnam-backend:
-                image: ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:${{ github.sha }}
-                container_name: researchpulse_backend_vn
-                restart: unless-stopped
-                ports:
-                  - "5000:5000"
-                env_file:
-                  - .env
-                networks:
-                  - researchpulse_network
+            deploy_docker_config="$(mktemp -d)"
+            export DOCKER_CONFIG="$deploy_docker_config"
+            trap 'rm -rf "$deploy_docker_config"' EXIT
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
 
-            networks:
-              researchpulse_network:
-                external: true
-                name: researchpulse_network
-            EOF
-
-            if docker compose version >/dev/null 2>&1; then
-              docker compose pull vietnam-backend
-              docker compose up -d --force-recreate --no-deps vietnam-backend
-              docker compose ps vietnam-backend
-            else
-              docker-compose pull vietnam-backend
-              docker-compose up -d --force-recreate --no-deps vietnam-backend
-              docker-compose ps vietnam-backend
-            fi
+            export BACKEND_IMAGE=ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:${{ github.sha }}
+            docker-compose config
+            docker-compose pull vietnam-backend
+            docker-compose up -d --force-recreate --no-deps vietnam-backend
+            docker-compose ps vietnam-backend
 
             docker image prune -f
 
