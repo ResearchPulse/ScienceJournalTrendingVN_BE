@@ -2,49 +2,47 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
-
+import jwt from 'jsonwebtoken';
 import { logout } from '../../../modules/auth/controllers/auth.controller.js';
+import { getAuthCookieNames } from '../../../modules/auth/utils/authCookies.js';
 
 process.env.NODE_ENV = 'production';
-process.env.PARENT_COOKIE_DOMAIN = '.hyperdatalab.org';
-process.env.COOKIE_DOMAIN = 'vn.hyperdatalab.org';
-
-const buildTestApp = async () => {
-  const app = Fastify();
-  await app.register(cookie);
-  app.post('/api/auth/logout', logout);
-  return app;
-};
+process.env.PARENT_JWT_SECRET = 'parent-secret';
+process.env.VN_SSO_BLOCK_SECRET = 'block-secret';
 
 describe('logout cookie clear contracts', () => {
-  test('logout clears both local and parent wildcard cookies', async () => {
-    const app = await buildTestApp();
+  test('logout clears only child-owned cookies', async () => {
+    const app = Fastify();
+    await app.register(cookie);
+    app.post('/api/auth/logout', logout);
+    const response = await app.inject({ method: 'POST', url: '/api/auth/logout' });
 
+    assert.equal(response.statusCode, 200);
+    const cookies = [].concat(response.headers['set-cookie'] || []);
+    const names = getAuthCookieNames();
+    assert.equal(cookies.some((value) => value.includes(`${names.access}=`)), true);
+    assert.equal(cookies.some((value) => value.includes(`${names.refresh}=`)), true);
+    assert.equal(cookies.some((value) => value.toLowerCase().includes('domain=.hyperdatalab.org')), false);
+    await app.close();
+  });
+
+  test('logout keeps parent cookies and sets a host-only blocker for the current parent token', async () => {
+    const app = Fastify();
+    await app.register(cookie);
+    app.post('/api/auth/logout', logout);
+    const parentToken = jwt.sign({ email: 'user@example.com' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
     const response = await app.inject({
       method: 'POST',
       url: '/api/auth/logout',
+      cookies: { access_token: parentToken, refresh_token: 'parent-refresh' },
     });
 
-    assert.equal(response.statusCode, 200);
-    const json = response.json();
-    assert.equal(json.success, true);
-    assert.equal(json.code, 'LOGOUT_SUCCESS');
-
-    // Kiểm tra các header Set-Cookie trả về
-    const setCookies = response.headers['set-cookie'];
-    assert.ok(setCookies, 'Response must include set-cookie headers');
-
-    const cookiesArray = Array.isArray(setCookies) ? setCookies : [setCookies];
-
-    // Phải có chỉ thị xóa access_token và refresh_token cho domain .hyperdatalab.org
-    const hasParentAccessClear = cookiesArray.some(
-      (c) => c.includes('access_token=') && c.toLowerCase().includes('domain=.hyperdatalab.org')
-    );
-    const hasParentRefreshClear = cookiesArray.some(
-      (c) => c.includes('refresh_token=') && c.toLowerCase().includes('domain=.hyperdatalab.org')
-    );
-
-    assert.equal(hasParentAccessClear, true, 'Must clear parent domain access_token');
-    assert.equal(hasParentRefreshClear, true, 'Must clear parent domain refresh_token');
+    const cookies = [].concat(response.headers['set-cookie'] || []);
+    const names = getAuthCookieNames();
+    assert.equal(cookies.some((value) => value.includes(`${names.blocker}=`)), true);
+    assert.equal(cookies.some((value) => /(?:^|;\s*)access_token=/i.test(value)), false);
+    assert.equal(cookies.some((value) => /(?:^|;\s*)refresh_token=/i.test(value)), false);
+    assert.equal(cookies.some((value) => value.toLowerCase().includes('domain=')), false);
+    await app.close();
   });
 });

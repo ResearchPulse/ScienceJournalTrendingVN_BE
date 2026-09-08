@@ -45,7 +45,15 @@ const parentFromRequest = (request) => {
     error.code = 'PARENT_SESSION_MISSING';
     throw error;
   }
-  const parent = verifyParentAccessToken(token);
+  let parent;
+  try {
+    parent = verifyParentAccessToken(token);
+  } catch {
+    const error = new Error('Parent session invalid');
+    error.statusCode = 401;
+    error.code = 'PARENT_SESSION_INVALID';
+    throw error;
+  }
   if (!parent.email || !Number.isFinite(parent.iat) || !Number.isFinite(parent.exp)
     || parent.exp <= Math.floor(Date.now() / 1000)) {
     const error = new Error('Parent session invalid');
