@@ -166,19 +166,15 @@ export const checkAuth = async (request, reply) => {
 
 export const logout = async (request, reply) => {
   try {
-    // 1. Xóa cookie cục bộ tại host vn
-    reply.clearCookie('access_token', getCookieOptions());
-    reply.clearCookie('refresh_token', getCookieOptions());
-    reply.clearCookie('sso_access_token', getCookieOptions());
+    const origin = request.headers.origin || '';
+    const host = request.headers.host || '';
+    const isHyperDataLab = origin.includes('hyperdatalab.org') || host.includes('hyperdatalab.org');
 
-    // 2. Xóa kép cookie cấp root domain cha (.hyperdatalab.org) nếu đang ở production
-    const isProd = process.env.NODE_ENV?.trim() === 'production';
-    const parentDomain = process.env.COOKIE_PARENT_DOMAIN?.trim() || (isProd ? '.hyperdatalab.org' : undefined);
-    if (parentDomain) {
-      reply.clearCookie('access_token', getCookieOptions({ domain: parentDomain }));
-      reply.clearCookie('refresh_token', getCookieOptions({ domain: parentDomain }));
-      reply.clearCookie('sso_access_token', getCookieOptions({ domain: parentDomain }));
-    }
+    const cookieDomain = isHyperDataLab ? (process.env.COOKIE_DOMAIN?.trim() || '.hyperdatalab.org') : undefined;
+
+    reply.clearCookie('access_token', getCookieOptions({ domain: cookieDomain }));
+    reply.clearCookie('refresh_token', getCookieOptions({ domain: cookieDomain }));
+    reply.clearCookie('sso_access_token', getCookieOptions({ domain: cookieDomain }));
 
     return reply.status(200).send({
       success: true,
