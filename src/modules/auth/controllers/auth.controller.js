@@ -1,9 +1,18 @@
 import { loginWithEmailPassword, signRefreshToken, signToken } from '../services/login.service.js';
 import { registerWithEmailPassword, activateAccount, resendActivationEmail } from '../services/register.service.js';
 import logger from '../../../utils/logger.js';
-import jwt from 'jsonwebtoken';
 import { createLog } from '../../system/services/log.service.js';
 import { isValidEmail } from '../../../utils/validation.js';
+import { verifyChildRefreshToken, verifyParentRefreshToken } from '../config/authTokens.js';
+import {
+  getAuthCookieNames,
+  getAuthCookieOptions,
+  getClearAuthCookieOptions,
+  getParentCookieClearOptions,
+  clearLegacyCookies,
+} from '../utils/authCookies.js';
+import { resolveLocalSsoUser } from '../services/sso.service.js';
+import { resolveAuthenticatedUser } from '../middlewares/auth.middleware.js';
 
 export const login = async (request, reply) => {
   try {
@@ -21,44 +30,29 @@ export const login = async (request, reply) => {
 
     const data = await loginWithEmailPassword({ email, password });
 
-    reply.setCookie('access_token', data.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE),
-      path: '/'
-    });
+    const cookieNames = getAuthCookieNames();
+    clearLegacyCookies(reply);
+    reply.setCookie(cookieNames.access, data.token, getAuthCookieOptions('access'));
 
     if (remember === true) {
       const refreshToken = signRefreshToken(data.user);
-      reply.setCookie('refresh_token', refreshToken, {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'none',  
-        maxAge: Number(process.env.COOKIE_REFRESH_MAX_AGE),
-        path: '/'
-      });
+      reply.setCookie(cookieNames.refresh, refreshToken, getAuthCookieOptions('refresh'));
     } else {
-      reply.clearCookie('refresh_token', {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'none',
-        path: '/'
-      });
+      reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
     }
 
     createLog({
       userId: data.user.user_id,
       userRole: data.user.role,
       action: 'LOGIN',
-      message: `NgÆ°á»i dÃ¹ng ${data.user.email} Ä‘Äƒng nháº­p há»‡ thá»‘ng thÃ� nh cÃ´ng`,
+      message: `NgÆ°á»i dÃ¹ng ${data.user.email} Ä‘Äƒng nháº­p há»‡ thá»‘ng thÃ� nh cÃ´ng`,
       metadata: { ip: request.ip, userAgent: request.headers['user-agent'] }
     });
 
     return reply.status(200).send({
       success: true,
       code: "LOGIN_SUCCESS",
-      message: "ÄÄƒng nháº­p thÃ� nh cÃ´ng",
+      message: "ÄÄƒng nháº­p thÃ� nh cÃ´ng",
       data: {
         token: data.token,
       }
@@ -78,7 +72,10 @@ export const login = async (request, reply) => {
 
 export const refreshToken = async (request, reply) => {
   try {
-    const refreshTokenValue = request.cookies.refresh_token;
+    const cookieNames = getAuthCookieNames();
+    const childRefreshToken = request.cookies?.[cookieNames.refresh];
+    const parentRefreshToken = request.cookies?.refresh_token;
+    const refreshTokenValue = childRefreshToken || parentRefreshToken;
     
     if (!refreshTokenValue) {
       return reply.status(401).send({
@@ -90,9 +87,9 @@ export const refreshToken = async (request, reply) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(refreshTokenValue, process.env.JWT_REFRESH_SECRET, {
-        ignoreExpiration: true,
-      });
+      decoded = childRefreshToken
+        ? verifyChildRefreshToken(refreshTokenValue)
+        : verifyParentRefreshToken(refreshTokenValue);
     } catch (jwtError) {
       return reply.status(401).send({
         success: false,
@@ -101,24 +98,18 @@ export const refreshToken = async (request, reply) => {
       });
     }
 
-    const newAccessToken = signToken({
-      user_id: decoded.user_id,
-      email: decoded.email,
-      role: decoded.role,
-    });
+    const user = childRefreshToken
+      ? { user_id: decoded.user_id, email: decoded.email, role: decoded.role }
+      : await resolveLocalSsoUser(decoded.email || decoded.username);
+    const newAccessToken = signToken(user);
 
-    reply.setCookie("access_token", newAccessToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "none",
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE),
-      path: '/'
-    });
+    clearLegacyCookies(reply);
+    reply.setCookie(cookieNames.access, newAccessToken, getAuthCookieOptions('access'));
 
     return reply.status(200).send({
       success: true,
       code: "REFRESH_TOKEN_SUCCESS",
-      message: "Refresh token thÃ� nh cÃ´ng",
+      message: "Refresh token thÃ� nh cÃ´ng",
       data: {
         token: newAccessToken,
       },
@@ -134,7 +125,9 @@ export const refreshToken = async (request, reply) => {
 
 export const checkAuth = async (request, reply) => {
   try {
-    const accessToken = request.cookies?.access_token;
+    const accessToken = request.headers.authorization?.replace(/^Bearer\s+/i, '')
+      || request.cookies?.[getAuthCookieNames().access]
+      || request.cookies?.access_token;
 
     if (!accessToken) {
       return reply.status(401).send({
@@ -145,17 +138,32 @@ export const checkAuth = async (request, reply) => {
       });
     }
 
+    const user = await resolveAuthenticatedUser(request);
+    clearLegacyCookies(reply);
     return reply.status(200).send({
       success: true,
       authenticated: true,
+      data: {
+        user_id: user.user_id,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        ...(user.auth_source ? { auth_source: user.auth_source } : {}),
+      },
+      user: {
+        user_id: user.user_id,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+      },
       access_token: accessToken,
     });
 
   } catch (error) {
-    return reply.status(401).send({
+    return reply.status(error.statusCode || 401).send({
       success: false,
       authenticated: false,
-      code: "ACCESS_TOKEN_INVALID",
+      code: error.code || "ACCESS_TOKEN_INVALID",
       message: "Access token khÃ´ng há»£p lá»‡ hoáº·c Ä‘Ã£ háº¿t háº¡n",
     });
   }
@@ -163,24 +171,45 @@ export const checkAuth = async (request, reply) => {
 
 export const logout = async (request, reply) => {
   try {
-    reply.clearCookie('access_token', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
-      path: '/'
-    });
+    const cookieNames = getAuthCookieNames();
+    clearLegacyCookies(reply);
 
-    reply.clearCookie('refresh_token', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
-      path: '/'
-    });
+    // Host-only cookie clear
+    reply.clearCookie(cookieNames.access, getClearAuthCookieOptions());
+    reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
+    reply.clearCookie('access_token', getClearAuthCookieOptions());
+    reply.clearCookie('refresh_token', getClearAuthCookieOptions());
+    reply.clearCookie('access_token', getClearAuthCookieOptions({ sameSite: 'lax' }));
+    reply.clearCookie('refresh_token', getClearAuthCookieOptions({ sameSite: 'lax' }));
+
+    // Domain cookie clear (.hyperdatalab.org and hyperdatalab.org)
+    const parentDomain = process.env.PARENT_COOKIE_DOMAIN?.trim() || '.hyperdatalab.org';
+    const dotDomain = parentDomain.startsWith('.') ? parentDomain : `.${parentDomain}`;
+    const bareDomain = dotDomain.slice(1);
+
+    for (const domain of [dotDomain, bareDomain]) {
+      for (const sameSite of ['none', 'lax']) {
+        reply.clearCookie('access_token', {
+          httpOnly: true,
+          secure: true,
+          sameSite,
+          path: '/',
+          domain,
+        });
+        reply.clearCookie('refresh_token', {
+          httpOnly: true,
+          secure: true,
+          sameSite,
+          path: '/',
+          domain,
+        });
+      }
+    }
 
     return reply.status(200).send({
       success: true,
       code: "LOGOUT_SUCCESS",
-      message: "ÄÄƒng xuáº¥t thÃ� nh cÃ´ng",
+      message: "Đăng xuất thành công",
     });
   } catch (error) {
     logger.error("Lá»—i há»‡ thá»‘ng trong controller Ä‘Äƒng xuáº¥t:", error);
@@ -189,6 +218,46 @@ export const logout = async (request, reply) => {
       code: "LOGOUT_FAILED",
       message: "CÃ³ lá»—i xáº£y ra á»Ÿ server",
     });
+  }
+};
+
+const ssoResponse = (reply, data) => {
+  const names = getAuthCookieNames();
+  reply.setCookie(names.access, data.token, getAuthCookieOptions('access', {
+    maxAge: data.sessionExpiresIn,
+  }));
+  return reply.status(200).send({
+    success: true,
+    authenticated: true,
+    code: 'SSO_BOOTSTRAP_SUCCESS',
+    data: {
+      user_id: data.user.user_id,
+      email: data.user.email,
+      role: data.user.role,
+    },
+  });
+};
+
+export const ssoBootstrap = async (request, reply) => {
+  try {
+    request.authCookieNames = getAuthCookieNames();
+    return ssoResponse(reply, await bootstrapSso({ request }));
+  } catch (error) {
+    if (error.code === 'LEGACY_COOKIE_CLEARED') {
+      reply.clearCookie('access_token', getClearAuthCookieOptions());
+      reply.clearCookie('refresh_token', getClearAuthCookieOptions());
+    }
+    return reply.status(error.statusCode || 500).send({ success: false, authenticated: false, code: error.code || 'SSO_FAILED', message: error.message });
+  }
+};
+
+export const ssoLogin = async (request, reply) => {
+  try {
+    request.authCookieNames = getAuthCookieNames();
+    reply.clearCookie(getAuthCookieNames().blocker, getClearAuthCookieOptions());
+    return ssoResponse(reply, await bootstrapSso({ request, explicit: true }));
+  } catch (error) {
+    return reply.status(error.statusCode || 500).send({ success: false, authenticated: false, code: error.code || 'SSO_FAILED', message: error.message });
   }
 };
 
@@ -209,19 +278,19 @@ export const register = async (request, reply) => {
       return reply.status(400).send({ success: false, code: "PASSWORD_TOO_SHORT", message: "Máº­t kháº©u pháº£i cÃ³ Ã­t nháº¥t 6 kÃ½ tá»±" });
     }
     if (role && !["STUDENT", "LECTURER", "RESEARCHER", "ADMINISTRATOR"].includes(role)) {
-      return reply.status(400).send({ success: false, code: "ROLE_INVALID", message: "Vai trÃ² tÃ� i khoáº£n khÃ´ng há»£p lá»‡" });
+      return reply.status(400).send({ success: false, code: "ROLE_INVALID", message: "Vai trÃ² tÃ� i khoáº£n khÃ´ng há»£p lá»‡" });
     }
 
     const data = await registerWithEmailPassword({ email, password, first_name, last_name, date_of_birth, gender, role });
 
-    logger.info(`[Register]: ÄÄƒng kÃ½ thÃ� nh cÃ´ng cho tÃ� i khoáº£n: ${data.email} (Tráº¡ng thÃ¡i: INACTIVE)`);
+    logger.info(`[Register]: ÄÄƒng kÃ½ thÃ� nh cÃ´ng cho tÃ� i khoáº£n: ${data.email} (Tráº¡ng thÃ¡i: INACTIVE)`);
 
     return reply.status(201).send({
       success: true,
       code: data.activation_email_sent ? "REGISTER_SUCCESS" : "REGISTER_SUCCESS_EMAIL_PENDING",
       message: data.activation_email_sent 
-        ? "ÄÄƒng kÃ½ tÃ� i khoáº£n thÃ� nh cÃ´ng. Vui lÃ²ng kiá»ƒm tra email Ä‘á»ƒ kÃ­ch hoáº¡t tÃ� i khoáº£n."
-        : "TÃ� i khoáº£n Ä‘Ã£ Ä‘Æ°á»£c táº¡o nhÆ°ng email kÃ­ch hoáº¡t chÆ°a gá»­i Ä‘Æ°á»£c. Vui lÃ²ng thá»­ gá»­i láº¡i.",
+        ? "ÄÄƒng kÃ½ tÃ� i khoáº£n thÃ� nh cÃ´ng. Vui lÃ²ng kiá»ƒm tra email Ä‘á»ƒ kÃ­ch hoáº¡t tÃ� i khoáº£n."
+        : "TÃ� i khoáº£n Ä‘Ã£ Ä‘Æ°á»£c táº¡o nhÆ°ng email kÃ­ch hoáº¡t chÆ°a gá»­i Ä‘Æ°á»£c. Vui lÃ²ng thá»­ gá»­i láº¡i.",
       data,
     });
   } catch (error) {
@@ -275,23 +344,23 @@ export const verify = async (request, reply) => {
 
     const result = await activateAccount(token);
     if (result.alreadyActive) {
-      logger.warn(`[Register]: TÃ� i khoáº£n ${result.email} Ä‘Ã£ Ä‘Æ°á»£c kÃ­ch hoáº¡t trÆ°á»›c Ä‘Ã³.`);
+      logger.warn(`[Register]: TÃ� i khoáº£n ${result.email} Ä‘Ã£ Ä‘Æ°á»£c kÃ­ch hoáº¡t trÆ°á»›c Ä‘Ã³.`);
       return reply.status(200).send({
         success: true,
         code: "ACCOUNT_ALREADY_ACTIVE",
-        message: "TÃ� i khoáº£n Ä‘Ã£ Ä‘Æ°á»£c kÃ­ch hoáº¡t tá»« trÆ°á»›c. Báº¡n cÃ³ thá»ƒ Ä‘Äƒng nháº­p.",
+        message: "TÃ� i khoáº£n Ä‘Ã£ Ä‘Æ°á»£c kÃ­ch hoáº¡t tá»« trÆ°á»›c. Báº¡n cÃ³ thá»ƒ Ä‘Äƒng nháº­p.",
       });
     }
 
-    logger.info(`[Register]: KÃ­ch hoáº¡t tÃ� i khoáº£n thÃ� nh cÃ´ng cho email: ${result.email}`);
+    logger.info(`[Register]: KÃ­ch hoáº¡t tÃ� i khoáº£n thÃ� nh cÃ´ng cho email: ${result.email}`);
     return reply.status(200).send({
       success: true,
       code: "ACCOUNT_ACTIVATION_SUCCESS",
-      message: "KÃ­ch hoáº¡t tÃ� i khoáº£n thÃ� nh cÃ´ng! BÃ¢y giá» báº¡n cÃ³ thá»ƒ Ä‘Äƒng nháº­p.",
+      message: "KÃ­ch hoáº¡t tÃ� i khoáº£n thÃ� nh cÃ´ng! BÃ¢y giá» báº¡n cÃ³ thá»ƒ Ä‘Äƒng nháº­p.",
     });
   } catch (error) {
     if (!error.statusCode || error.statusCode === 500) {
-      logger.error("Lá»—i há»‡ thá»‘ng trong controller xÃ¡c thá»±c tÃ� i khoáº£n:", error);
+      logger.error("Lá»—i há»‡ thá»‘ng trong controller xÃ¡c thá»±c tÃ� i khoáº£n:", error);
     }
     return reply.status(error.statusCode || 500).send({
       success: false,
@@ -320,27 +389,15 @@ export const googleLogin = async (request, reply) => {
 
     const data = await loginOrCreateWithGoogle(googleToken);
 
-    reply.setCookie('access_token', data.token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE) || 86400,
-      path: '/'
-    });
+    const cookieNames = getAuthCookieNames();
+    reply.setCookie(cookieNames.access, data.token, getAuthCookieOptions('access'));
+    reply.setCookie(cookieNames.refresh, data.refreshToken, getAuthCookieOptions('refresh'));
 
-    reply.setCookie('refresh_token', data.refreshToken, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'none',
-      maxAge: Number(process.env.COOKIE_REFRESH_MAX_AGE) || 604800,
-      path: '/'
-    });
-
-    await createLog(data.user.user_id, 'LOGIN', 'Đăng nhập th� nh công bằng Google', request.ip);
+    await createLog(data.user.user_id, 'LOGIN', 'Đăng nhập th� nh công bằng Google', request.ip);
 
     return reply.status(200).send({
       success: true,
-      message: 'Đăng nhập Google th� nh công',
+      message: 'Đăng nhập Google th� nh công',
       data
     });
   } catch (error) {

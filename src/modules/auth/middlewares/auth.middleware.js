@@ -1,91 +1,152 @@
-import jwt from 'jsonwebtoken';
-import logger from '../../../utils/logger.js';
+import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
+import { verifyChildAccessToken, verifyParentAccessToken } from '../config/authTokens.js';
+import { getAuthCookieNames } from '../utils/authCookies.js';
+import { resolveLocalSsoUser } from '../services/sso.service.js';
 
-export const requireAuth = async (request, reply) => {
+const reject = (reply, statusCode, code, message) => reply.status(statusCode).send({
+  success: false,
+  ...(code ? { code } : {}),
+  message,
+});
+
+export const authUserRepository = {
+  findById: (userId) => prisma.user.findUnique({
+    where: { user_id: userId },
+    select: { user_id: true, email: true, role: true, status: true, type: true },
+  }),
+};
+
+// ponytail: in-memory cache for resolved auth users (60s TTL). Bypasses repeated DB queries across network on every request.
+const authUserCache = new Map();
+const AUTH_CACHE_TTL_MS = 60 * 1000;
+
+const getCachedUser = (key) => {
+  const cached = authUserCache.get(key);
+  if (cached && Date.now() - cached.timestamp < AUTH_CACHE_TTL_MS) {
+    return cached.user;
+  }
+  authUserCache.delete(key);
+  return null;
+};
+
+const setCachedUser = (key, user) => {
+  if (authUserCache.size > 2000) authUserCache.clear();
+  authUserCache.set(key, { user, timestamp: Date.now() });
+};
+
+const currentLocalUser = async (decoded) => {
+  const cacheKey = `local:${decoded.user_id}`;
+  const cached = getCachedUser(cacheKey);
+  if (cached) return { ...decoded, ...cached };
+
+  const user = await authUserRepository.findById(decoded.user_id);
+  if (!user || user.status !== 'ACTIVE') {
+    const error = new Error('Local account is unavailable');
+    error.statusCode = 403;
+    error.code = 'ACCOUNT_UNAVAILABLE';
+    throw error;
+  }
+  const result = {
+    user_id: user.user_id,
+    email: user.email,
+    role: user.role,
+    status: user.status,
+    type: user.type,
+  };
+  setCachedUser(cacheKey, result);
+  return { ...decoded, ...result };
+};
+
+const parentLocalUser = async (decoded) => {
+  const cacheKey = `parent:${decoded.email || decoded.username}`;
+  const cached = getCachedUser(cacheKey);
+  if (cached) return cached;
+
+  const user = await resolveLocalSsoUser(decoded.email || decoded.username);
+  const result = {
+    user_id: user.user_id,
+    email: user.email,
+    role: user.role,
+    status: user.status,
+    type: user.type,
+    auth_source: 'parent_sso',
+  };
+  setCachedUser(cacheKey, result);
+  return result;
+};
+
+const tokenFromRequest = (request) => {
+  const bearer = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (bearer) return { token: bearer, source: 'bearer' };
+
+  const childToken = request.cookies?.[getAuthCookieNames().access];
+  if (childToken) return { token: childToken, source: 'child' };
+
+  const parentToken = request.cookies?.access_token;
+  return parentToken ? { token: parentToken, source: 'parent' } : null;
+};
+
+export const resolveAuthenticatedUser = async (request) => {
+  const candidate = tokenFromRequest(request);
+  if (!candidate) {
+    const error = new Error('Authentication token missing');
+    error.statusCode = 401;
+    error.code = 'ACCESS_TOKEN_MISSING';
+    throw error;
+  }
+
+  if (candidate.source === 'child') {
+    return currentLocalUser(verifyChildAccessToken(candidate.token));
+  }
+  if (candidate.source === 'parent') {
+    return parentLocalUser(verifyParentAccessToken(candidate.token));
+  }
+
   try {
-    const authHeader = request.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return reply.status(401).send({
-        success: false,
-        message: 'Không tìm thấy token xác thực hoặc token không hợp lệ'
-      });
-    }
-
-    const token = authHeader.split(' ')[1];
-    if (!process.env.JWT_SECRET) {
-      return reply.status(500).send({
-        success: false,
-        message: 'Lỗi cấu hình JWT trên server'
-      });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    request.user = decoded;
-  } catch (error) {
-    return reply.status(401).send({
-      success: false,
-      message: 'Token xác thực không hợp lệ hoặc đã hết hạn'
-    });
+    return await currentLocalUser(verifyChildAccessToken(candidate.token));
+  } catch (childError) {
+    if (childError.statusCode === 403) throw childError;
+    return parentLocalUser(verifyParentAccessToken(candidate.token));
   }
 };
 
-export const verifyToken = async (request, reply) => {
-  let accessToken = null;
-
-  const authHeader = request.headers.authorization;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    accessToken = authHeader.split(' ')[1];
-  }
-
-  if (!accessToken && request.cookies) {
-    accessToken = request.cookies.access_token;
-  }
-
-  if (!accessToken) {
-    return reply.status(401).send({
-      success: false,
-      code: "ACCESS_TOKEN_MISSING",
-      message: "Bạn chưa đăng nhập hoặc phiên l� m việc đã hết hạn"
-    });
-  }
-
+const authenticate = async (request, reply, missingMessage, invalidMessage) => {
   try {
-    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
-    request.user = decoded; 
+    request.user = await resolveAuthenticatedUser(request);
   } catch (error) {
-    return reply.status(401).send({
-      success: false,
-      code: "ACCESS_TOKEN_EXPIRED",
-      message: "Access token không hợp lệ hoặc đã hết hạn"
-    });
+    const statusCode = error.statusCode || 401;
+    const code = error.code || (statusCode === 401 ? 'ACCESS_TOKEN_INVALID' : 'ACCOUNT_UNAVAILABLE');
+    const message = code === 'ACCESS_TOKEN_MISSING' ? missingMessage : (error.message || invalidMessage);
+    if (!reply.sent) reject(reply, statusCode, code, message);
   }
 };
+
+export const requireAuth = async (request, reply) => authenticate(
+  request,
+  reply,
+  'Không tìm thấy token xác thực',
+  'Token xác thực không hợp lệ hoặc đã hết hạn',
+);
+
+export const verifyToken = async (request, reply) => authenticate(
+  request,
+  reply,
+  'Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn',
+  'Access token không hợp lệ hoặc đã hết hạn',
+);
 
 export const verifyAdmin = async (request, reply) => {
-  if (!request.user) {
-    return reply.status(401).send({
-      success: false,
-      message: 'Xác thực không th� nh công, không tìm thấy thông tin người dùng.',
-      code: 'UNAUTHENTICATED'
-    });
-  }
-
+  if (!request.user) return reject(reply, 401, 'UNAUTHENTICATED', 'Xác thực không thành công');
   if (request.user.role !== 'ADMINISTRATOR') {
-    createLog({
+    await createLog({
       userId: request.user.user_id,
       userRole: request.user.role,
       action: 'SYSTEM',
       level: 'WARNING',
-      message: `T� i khoản ${request.user.email} cố gắng truy cập t� i nguyên Admin (Bị từ chối)`,
-      metadata: { ip: request.ip, path: request.url }
+      message: `Tài khoản ${request.user.email} cố gắng truy cập tài nguyên Admin`,
+      metadata: { ip: request.ip, path: request.url },
     });
-    return reply.status(403).send({
-      success: false,
-      message: 'Bạn không có quyền truy cập t� i nguyên n� y',
-      code: 'NO_PERMISSION'
-    });
+    return reject(reply, 403, 'NO_PERMISSION', 'Bạn không có quyền truy cập tài nguyên này');
   }
 };
-
-
