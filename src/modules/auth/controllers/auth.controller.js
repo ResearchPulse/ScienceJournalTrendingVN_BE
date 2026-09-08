@@ -4,20 +4,9 @@ import logger from '../../../utils/logger.js';
 import jwt from 'jsonwebtoken';
 import { createLog } from '../../system/services/log.service.js';
 import { isValidEmail } from '../../../utils/validation.js';
+import { getCookieOptions, getParentCookieClearOptions } from '../utils/authCookies.js';
 
-export const getCookieOptions = (extra = {}) => {
-  const isProd = process.env.NODE_ENV?.trim() === 'production';
-  const cookieDomain = process.env.COOKIE_DOMAIN?.trim();
-
-  return {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? 'none' : 'lax',
-    path: '/',
-    ...(cookieDomain ? { domain: cookieDomain } : {}),
-    ...extra,
-  };
-};
+export { getCookieOptions };
 
 export const login = async (request, reply) => {
   try {
@@ -166,8 +155,15 @@ export const checkAuth = async (request, reply) => {
 
 export const logout = async (request, reply) => {
   try {
-    reply.clearCookie('access_token', getCookieOptions());
-    reply.clearCookie('refresh_token', getCookieOptions());
+    // 1. Xóa cookie cục bộ của subdomain con
+    const localClearOptions = getCookieOptions();
+    reply.clearCookie('access_token', localClearOptions);
+    reply.clearCookie('refresh_token', localClearOptions);
+
+    // 2. Xóa cookie của domain cha (.hyperdatalab.org)
+    const parentClearOptions = getParentCookieClearOptions();
+    reply.clearCookie('access_token', parentClearOptions);
+    reply.clearCookie('refresh_token', parentClearOptions);
 
     return reply.status(200).send({
       success: true,

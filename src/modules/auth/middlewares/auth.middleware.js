@@ -3,6 +3,12 @@ import crypto from 'crypto';
 import logger from '../../../utils/logger.js';
 import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
+import { isParentToken } from '../config/authTokens.js';
+
+export const authUserRepository = {
+  findById: (id) => prisma.user.findUnique({ where: { user_id: id } }),
+  findByEmail: (email) => prisma.user.findUnique({ where: { email } }),
+};
 
 export const requireAuth = async (request, reply) => {
   try {
@@ -17,23 +23,26 @@ export const requireAuth = async (request, reply) => {
     if (!token) {
       return reply.status(401).send({
         success: false,
-        message: 'KhÃ´ng tÃ¬m tháº¥y token xÃ¡c thá»±c hoáº·c token khÃ´ng há»£p lá»‡'
+        message: 'Không tìm thấy token xác thực hoặc token không hợp lệ'
       });
     }
 
     if (!process.env.JWT_SECRET) {
       return reply.status(500).send({
         success: false,
-        message: 'Lá»—i cáº¥u hÃ¬nh JWT trÃªn server'
+        message: 'Lỗi cấu hình JWT trên server'
       });
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    request.user = decoded;
+    request.user = {
+      ...decoded,
+      auth_source: isParentToken(decoded) ? 'parent_sso' : 'child_local',
+    };
   } catch (error) {
     return reply.status(401).send({
       success: false,
-      message: 'Token xÃ¡c thá»±c khÃ´ng há»£p lá»‡ hoáº·c Ä‘Ã£ háº¿t háº¡n'
+      message: 'Token xác thực không hợp lệ hoặc đã hết hạn'
     });
   }
 };
@@ -54,55 +63,42 @@ export const verifyToken = async (request, reply) => {
     return reply.status(401).send({
       success: false,
       code: "ACCESS_TOKEN_MISSING",
-      message: "Báº¡n chÆ°a Ä‘Äƒng nháº­p hoáº·c phiÃªn lÃ m viá»‡c Ä‘Ã£ háº¿t háº¡n"
+      message: "Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn"
     });
   }
 
   try {
     const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
 
-    // TÃ¬m user trong DB local cá»§a vn theo user_id hoáº·c email
+    // Stateless Verification cho token do hệ thống cha (hyperdatalab.org) phát hành
+    // Không truy vấn DB nội bộ, gán thẳng dữ liệu vào request.user
+    if (isParentToken(decoded)) {
+      request.user = {
+        ...decoded,
+        user_id: decoded.user_id,
+        role: decoded.role || 'STUDENT',
+        email: decoded.email,
+        auth_source: 'parent_sso',
+        domain: decoded.domain || decoded.iss || 'hyperdatalab.org',
+      };
+      return;
+    }
+
+    // Đối với token do site con cấp: kiểm tra trong DB nội bộ
     let user = null;
     if (decoded.user_id) {
-      user = await prisma.user.findUnique({
-        where: { user_id: decoded.user_id }
-      });
+      user = await authUserRepository.findById(decoded.user_id);
     }
 
     if (!user && decoded.email) {
-      user = await prisma.user.findUnique({
-        where: { email: decoded.email }
-      });
+      user = await authUserRepository.findByEmail(decoded.email);
     }
 
-    // JIT Provisioning: Náº¿u token há»£p lá»‡ tá»« domain cha nhÆ°ng chÆ°a cÃ³ trong DB cá»§a vn -> tá»± Ä‘á»™ng táº¡o
-    if (!user && decoded.email) {
-      try {
-        user = await prisma.user.create({
-          data: {
-            user_id: crypto.randomUUID(),
-            email: decoded.email,
-            first_name: decoded.first_name || decoded.name || null,
-            last_name: decoded.last_name || null,
-            role: 'STUDENT',
-            status: 'ACTIVE',
-            type: 'LOCAL'
-          }
-        });
-        logger.info(`[SSO JIT Provisioning]: Tá»± Ä‘á»™ng táº¡o user má»›i ${decoded.email} tá»« SSO Token.`);
-      } catch (createErr) {
-        user = await prisma.user.findUnique({
-          where: { email: decoded.email }
-        });
-        if (!user) throw createErr;
-      }
-    }
-
-    if (user && user.status === 'BANNED') {
+    if (user && user.status !== 'ACTIVE') {
       return reply.status(403).send({
         success: false,
-        code: "USER_BANNED",
-        message: "TÃ i khoáº£n cá»§a báº¡n Ä‘Ã£ bá»‹ khÃ³a"
+        code: "ACCOUNT_UNAVAILABLE",
+        message: "Tài khoản của bạn đã bị khóa hoặc chưa được kích hoạt"
       });
     }
 
@@ -110,13 +106,14 @@ export const verifyToken = async (request, reply) => {
       ...decoded,
       user_id: user ? user.user_id : decoded.user_id,
       role: user ? user.role : (decoded.role || 'STUDENT'),
-      email: user ? user.email : decoded.email
+      email: user ? user.email : decoded.email,
+      auth_source: 'child_local',
     };
   } catch (error) {
     return reply.status(401).send({
       success: false,
       code: "ACCESS_TOKEN_EXPIRED",
-      message: "Access token khÃ´ng há»£p lá»‡ hoáº·c Ä‘Ã£ háº¿t háº¡n"
+      message: "Access token không hợp lệ hoặc đã hết hạn"
     });
   }
 };
@@ -125,7 +122,7 @@ export const verifyAdmin = async (request, reply) => {
   if (!request.user) {
     return reply.status(401).send({
       success: false,
-      message: 'Xác thực không th� nh công, không tìm thấy thông tin người dùng.',
+      message: 'Xác thực không thành công, không tìm thấy thông tin người dùng.',
       code: 'UNAUTHENTICATED'
     });
   }
@@ -136,15 +133,13 @@ export const verifyAdmin = async (request, reply) => {
       userRole: request.user.role,
       action: 'SYSTEM',
       level: 'WARNING',
-      message: `T� i khoản ${request.user.email} cố gắng truy cập t� i nguyên Admin (Bị từ chối)`,
+      message: `Tài khoản ${request.user.email} cố gắng truy cập tài nguyên Admin (Bị từ chối)`,
       metadata: { ip: request.ip, path: request.url }
     });
     return reply.status(403).send({
       success: false,
-      message: 'Bạn không có quyền truy cập t� i nguyên n� y',
+      message: 'Bạn không có quyền truy cập tài nguyên này',
       code: 'NO_PERMISSION'
     });
   }
 };
-
-

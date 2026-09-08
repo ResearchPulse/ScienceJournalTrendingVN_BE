@@ -1,24 +1,14 @@
-import bcrypt from 'bcryptjs';
+﻿import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../../../config/prisma.js';
 
-/**
- * Tạo đối tượng lỗi phản hồi khi thông tin đăng nhập sai (Mã lỗi 401)
- * @returns {Error} Lỗi với thông tin "Email hoặc mật khẩu không đúng" v�  status 401
- */
 const buildLoginError = () => {
-  const error = new Error('Email hoặc mật khẩu không đúng');
+  const error = new Error('Email hoac mat khau khong dung');
   error.statusCode = 401;
   return error;
 };
 
-/**
- * Sinh token JWT chứa ID, email v�  vai trò của user phục vụ cho phiên đăng nhập
- * @param {Object} user - Đối tượng user cần tạo token
- * @returns {string} Chuỗi JWT token
- * @throws {Error} Ném lỗi nếu chưa định nghĩa JWT_SECRET trong môi trường
- */
-export const signToken = (user) => {
+export const signToken = (user, extraClaims = {}) => {
   if (!process.env.JWT_SECRET) {
     throw new Error('Missing JWT_SECRET in environment variables');
   }
@@ -27,16 +17,18 @@ export const signToken = (user) => {
     {
       user_id: user.user_id,
       email: user.email,
-      role: user.role
+      role: user.role,
+      domain: process.env.COOKIE_DOMAIN?.replace(/^\./, '') || 'vn.hyperdatalab.org',
+      ...extraClaims,
     },
     process.env.JWT_SECRET,
     {
-      expiresIn: process.env.JWT_EXPIRES_IN || '1d'
+      expiresIn: process.env.JWT_EXPIRES_IN || '1d',
     }
   );
 };
 
-export const signRefreshToken = (user) => {
+export const signRefreshToken = (user, extraClaims = {}) => {
   if (!process.env.JWT_REFRESH_SECRET) {
     throw new Error('Missing JWT_REFRESH_SECRET in environment variables');
   }
@@ -45,23 +37,17 @@ export const signRefreshToken = (user) => {
     {
       user_id: user.user_id,
       email: user.email,
-      role: user.role
+      role: user.role,
+      domain: process.env.COOKIE_DOMAIN?.replace(/^\./, '') || 'vn.hyperdatalab.org',
+      ...extraClaims,
     },
     process.env.JWT_REFRESH_SECRET,
     {
-      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d'
+      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
     }
   );
 };
 
-/**
- * Thực hiện xác thực đăng nhập người dùng bằng email v�  mật khẩu truyền thống
- * @param {Object} credentials - Thông tin đăng nhập
- * @param {string} credentials.email - Địa chỉ email đăng nhập
- * @param {string} credentials.password - Mật khẩu đăng nhập
- * @returns {Promise<Object>} Đối tượng chứa chuỗi JWT access token v�  thông tin chi tiết user
- * @throws {Error} Ném lỗi 401 nếu sai mật khẩu/email, hoặc 403 nếu t� i khoản bị khóa/chưa kích hoạt
- */
 export const loginWithEmailPassword = async ({ email, password }) => {
   const normalizedEmail = email.trim().toLowerCase();
 
@@ -69,8 +55,8 @@ export const loginWithEmailPassword = async ({ email, password }) => {
     where: {
       email: {
         equals: normalizedEmail,
-        mode: 'insensitive'
-      }
+        mode: 'insensitive',
+      },
     },
     select: {
       user_id: true,
@@ -83,8 +69,8 @@ export const loginWithEmailPassword = async ({ email, password }) => {
       first_name: true,
       url_image: true,
       date_of_birth: true,
-      gender: true
-    }
+      gender: true,
+    },
   });
 
   if (!user) {
@@ -92,7 +78,7 @@ export const loginWithEmailPassword = async ({ email, password }) => {
   }
 
   if (user.type !== 'LOCAL') {
-    const error = new Error('T� i khoản n� y không hỗ trợ đăng nhập bằng mật khẩu');
+    const error = new Error('Tai khoan nay khong ho tro dang nhap bang mat khau');
     error.statusCode = 403;
     throw error;
   }
@@ -100,8 +86,8 @@ export const loginWithEmailPassword = async ({ email, password }) => {
   if (user.status !== 'ACTIVE') {
     const error = new Error(
       user.status === 'BANNED'
-        ? 'T� i khoản đã bị khóa'
-        : 'T� i khoản chưa được kích hoạt'
+        ? 'Tai khoan da bi khoa'
+        : 'Tai khoan chua duoc kich hoat'
     );
     error.statusCode = 403;
     throw error;
@@ -124,9 +110,7 @@ export const loginWithEmailPassword = async ({ email, password }) => {
     user: {
       user_id: user.user_id,
       email: user.email,
-      role: user.role
-    }
+      role: user.role,
+    },
   };
 };
-
-
