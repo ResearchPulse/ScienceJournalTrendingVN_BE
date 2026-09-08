@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   vietnam-backend:
-    image: ghcr.io/phunghao2701/scientificjournalsystem-vietnam-be:latest
+    image: ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:latest
     container_name: researchpulse_backend_vn
     restart: unless-stopped
 
