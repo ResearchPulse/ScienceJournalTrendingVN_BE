@@ -93,8 +93,6 @@ jobs:
           tags: |
             ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:latest
             ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:${{ github.sha }}
-            ghcr.io/phunghao2701/scientificjournalsystem-vietnam-be:latest
-            ghcr.io/phunghao2701/scientificjournalsystem-vietnam-be:${{ github.sha }}
 
   deploy:
     name: Deploy to VPS
