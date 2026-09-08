@@ -6,6 +6,7 @@ import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
 import { isValidEmail } from '../../../utils/validation.js';
 import { getCookieOptions, getParentCookieClearOptions, getAuthCookieNames } from '../utils/authCookies.js';
+import { isParentToken, verifyAccessToken } from '../config/authTokens.js';
 
 export { getCookieOptions };
 
@@ -128,17 +129,23 @@ export const checkAuth = async (request, reply) => {
       });
     }
 
-    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET || process.env.PARENT_JWT_SECRET);
+    const decoded = verifyAccessToken(accessToken);
 
-    if (decoded.domain === 'hyperdatalab.org' || decoded.iss === 'hyperdatalab.org') {
+    if (isParentToken(decoded)) {
       return reply.status(200).send({
         success: true,
         authenticated: true,
-        user: decoded,
+        user: {
+          user_id: decoded.user_id,
+          email: decoded.email,
+          role: decoded.role || 'USER',
+          auth_source: 'parent_sso',
+        },
         data: {
           user_id: decoded.user_id,
           email: decoded.email,
           role: decoded.role || 'USER',
+          auth_source: 'parent_sso',
         },
         access_token: accessToken,
       });

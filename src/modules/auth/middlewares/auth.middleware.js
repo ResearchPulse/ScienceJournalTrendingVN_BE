@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import logger from '../../../utils/logger.js';
 import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
-import { isParentToken } from '../config/authTokens.js';
+import { isParentToken, verifyAccessToken } from '../config/authTokens.js';
 
 export const authUserRepository = {
   findById: (id) => prisma.user.findUnique({ where: { user_id: id } }),
@@ -27,14 +27,7 @@ export const requireAuth = async (request, reply) => {
       });
     }
 
-    if (!process.env.JWT_SECRET) {
-      return reply.status(500).send({
-        success: false,
-        message: 'Loi cau hinh JWT tren server'
-      });
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = verifyAccessToken(token);
     request.user = {
       ...decoded,
       auth_source: isParentToken(decoded) ? 'parent_sso' : 'child_local',
@@ -68,7 +61,7 @@ export const verifyToken = async (request, reply) => {
   }
 
   try {
-    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+    const decoded = verifyAccessToken(accessToken);
 
     // Stateless Verification cho token do he thong cha (hyperdatalab.org) phat hanh
     // Khong truy van DB noi bo, gan thang du lieu vao request.user
