@@ -1,14 +1,28 @@
-const COOKIE_NAMES = {
-  production: {
-    access: '__Host-vn_access_token',
-    refresh: '__Host-vn_refresh_token',
-    blocker: '__Host-vn_sso_block',
-  },
-  development: {
-    access: 'vn_access_token_dev',
-    refresh: 'vn_refresh_token_dev',
-    blocker: 'vn_sso_block_dev',
-  },
+export const ACCESS_TOKEN_COOKIE = 'access_token';
+export const REFRESH_TOKEN_COOKIE = 'refresh_token';
+
+export const LEGACY_AUTH_COOKIE_NAMES = [
+  'vn_access_token_dev',
+  'vn_refresh_token_dev',
+  'vn_sso_block_dev',
+  '__Host-vn_access_token',
+  '__Host-vn_refresh_token',
+  '__Host-vn_sso_block',
+];
+
+/**
+ * Danh sách tên cookie chuẩn dùng cho toàn hệ thống
+ */
+export const getAuthCookieNames = () => ({
+  access: ACCESS_TOKEN_COOKIE,
+  refresh: REFRESH_TOKEN_COOKIE,
+});
+
+export const clearLegacyCookies = (reply) => {
+  const options = getClearAuthCookieOptions();
+  LEGACY_AUTH_COOKIE_NAMES.forEach((name) => {
+    reply.clearCookie(name, options);
+  });
 };
 
 const defaultMaxAge = {
@@ -22,16 +36,16 @@ const configuredMaxAge = (kind) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultMaxAge[kind];
 };
 
-export const getAuthCookieNames = () => (
-  process.env.NODE_ENV === 'production' ? COOKIE_NAMES.production : COOKIE_NAMES.development
-);
-
 export const getAuthCookieOptions = (kind, overrides = {}) => {
+  const isProd = process.env.NODE_ENV?.trim() === 'production';
+  const cookieDomain = process.env.COOKIE_DOMAIN?.trim();
+
   const options = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
     path: '/',
+    ...(cookieDomain ? { domain: cookieDomain } : {}),
   };
 
   if (kind === 'access' || kind === 'refresh') {
@@ -41,17 +55,25 @@ export const getAuthCookieOptions = (kind, overrides = {}) => {
   return { ...options, ...overrides };
 };
 
-export const getClearAuthCookieOptions = () => ({
-  httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
-  path: '/',
-});
+export const getClearAuthCookieOptions = (overrides = {}) => {
+  const isProd = process.env.NODE_ENV?.trim() === 'production';
+  const cookieDomain = process.env.COOKIE_DOMAIN?.trim();
 
-export const getParentCookieClearOptions = () => ({
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    path: '/',
+    ...(cookieDomain ? { domain: cookieDomain } : {}),
+    ...overrides,
+  };
+};
+
+export const getParentCookieClearOptions = (overrides = {}) => ({
   httpOnly: true,
-  secure: process.env.NODE_ENV === 'production',
-  sameSite: 'lax',
+  secure: true,
+  sameSite: 'none',
   path: '/',
-  domain: '.hyperdatalab.org',
+  domain: process.env.PARENT_COOKIE_DOMAIN?.trim() || '.hyperdatalab.org',
+  ...overrides,
 });

@@ -17,7 +17,29 @@ export const authUserRepository = {
   }),
 };
 
+// ponytail: in-memory cache for resolved auth users (60s TTL). Bypasses repeated DB queries across network on every request.
+const authUserCache = new Map();
+const AUTH_CACHE_TTL_MS = 60 * 1000;
+
+const getCachedUser = (key) => {
+  const cached = authUserCache.get(key);
+  if (cached && Date.now() - cached.timestamp < AUTH_CACHE_TTL_MS) {
+    return cached.user;
+  }
+  authUserCache.delete(key);
+  return null;
+};
+
+const setCachedUser = (key, user) => {
+  if (authUserCache.size > 2000) authUserCache.clear();
+  authUserCache.set(key, { user, timestamp: Date.now() });
+};
+
 const currentLocalUser = async (decoded) => {
+  const cacheKey = `local:${decoded.user_id}`;
+  const cached = getCachedUser(cacheKey);
+  if (cached) return { ...decoded, ...cached };
+
   const user = await authUserRepository.findById(decoded.user_id);
   if (!user || user.status !== 'ACTIVE') {
     const error = new Error('Local account is unavailable');
@@ -25,19 +47,24 @@ const currentLocalUser = async (decoded) => {
     error.code = 'ACCOUNT_UNAVAILABLE';
     throw error;
   }
-  return {
-    ...decoded,
+  const result = {
     user_id: user.user_id,
     email: user.email,
     role: user.role,
     status: user.status,
     type: user.type,
   };
+  setCachedUser(cacheKey, result);
+  return { ...decoded, ...result };
 };
 
 const parentLocalUser = async (decoded) => {
+  const cacheKey = `parent:${decoded.email || decoded.username}`;
+  const cached = getCachedUser(cacheKey);
+  if (cached) return cached;
+
   const user = await resolveLocalSsoUser(decoded.email || decoded.username);
-  return {
+  const result = {
     user_id: user.user_id,
     email: user.email,
     role: user.role,
@@ -45,6 +72,8 @@ const parentLocalUser = async (decoded) => {
     type: user.type,
     auth_source: 'parent_sso',
   };
+  setCachedUser(cacheKey, result);
+  return result;
 };
 
 const tokenFromRequest = (request) => {

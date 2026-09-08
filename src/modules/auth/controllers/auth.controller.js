@@ -9,6 +9,7 @@ import {
   getAuthCookieOptions,
   getClearAuthCookieOptions,
   getParentCookieClearOptions,
+  clearLegacyCookies,
 } from '../utils/authCookies.js';
 import { resolveLocalSsoUser } from '../services/sso.service.js';
 import { resolveAuthenticatedUser } from '../middlewares/auth.middleware.js';
@@ -30,6 +31,7 @@ export const login = async (request, reply) => {
     const data = await loginWithEmailPassword({ email, password });
 
     const cookieNames = getAuthCookieNames();
+    clearLegacyCookies(reply);
     reply.setCookie(cookieNames.access, data.token, getAuthCookieOptions('access'));
 
     if (remember === true) {
@@ -101,6 +103,7 @@ export const refreshToken = async (request, reply) => {
       : await resolveLocalSsoUser(decoded.email || decoded.username);
     const newAccessToken = signToken(user);
 
+    clearLegacyCookies(reply);
     reply.setCookie(cookieNames.access, newAccessToken, getAuthCookieOptions('access'));
 
     return reply.status(200).send({
@@ -136,6 +139,7 @@ export const checkAuth = async (request, reply) => {
     }
 
     const user = await resolveAuthenticatedUser(request);
+    clearLegacyCookies(reply);
     return reply.status(200).send({
       success: true,
       authenticated: true,
@@ -168,14 +172,19 @@ export const checkAuth = async (request, reply) => {
 export const logout = async (request, reply) => {
   try {
     const cookieNames = getAuthCookieNames();
+    clearLegacyCookies(reply);
     reply.clearCookie(cookieNames.access, getClearAuthCookieOptions());
     reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
     reply.clearCookie('access_token', getClearAuthCookieOptions());
     reply.clearCookie('refresh_token', getClearAuthCookieOptions());
 
-    if (process.env.NODE_ENV === 'production') {
-      reply.clearCookie('access_token', getParentCookieClearOptions());
-      reply.clearCookie('refresh_token', getParentCookieClearOptions());
+    const parentOptions = getParentCookieClearOptions();
+    reply.clearCookie('access_token', parentOptions);
+    reply.clearCookie('refresh_token', parentOptions);
+
+    if (parentOptions.domain?.startsWith('.')) {
+      reply.clearCookie('access_token', { ...parentOptions, domain: parentOptions.domain.slice(1) });
+      reply.clearCookie('refresh_token', { ...parentOptions, domain: parentOptions.domain.slice(1) });
     }
 
     return reply.status(200).send({
