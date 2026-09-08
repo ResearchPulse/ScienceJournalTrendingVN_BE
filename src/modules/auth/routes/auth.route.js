@@ -6,6 +6,7 @@ import * as authController from '../controllers/auth.controller.js';
  */
 export default async function authRoutes(fastify, options) {
   fastify.post('/login', authController.login);
+  fastify.post('/refresh', authController.refreshToken);
   fastify.get('/refresh', authController.refreshToken);
   fastify.get('/check-auth', authController.checkAuth);
   fastify.post('/logout', authController.logout);
@@ -15,4 +16,6 @@ export default async function authRoutes(fastify, options) {
   
   // Google Auth Endpoint
   fastify.post('/google', authController.googleLogin);
+  fastify.post('/sso/bootstrap', authController.ssoBootstrap);
+  fastify.post('/sso/login', authController.ssoLogin);
 }
