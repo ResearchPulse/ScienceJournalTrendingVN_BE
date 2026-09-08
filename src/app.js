@@ -48,6 +48,18 @@ const buildApp = async () => {
   await app.register(cookie);
   await app.register(formbody);
 
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    if (!body || !body.trim()) {
+      return done(null, {});
+    }
+    try {
+      done(null, JSON.parse(body));
+    } catch (err) {
+      err.statusCode = 400;
+      done(err, undefined);
+    }
+  });
+
   app.addHook('onRequest', async (request, reply) => {
     const sessionRoute = request.url.startsWith('/api/v1/auth/sso/')
       || request.url.startsWith('/api/v1/auth/logout')
