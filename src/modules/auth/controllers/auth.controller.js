@@ -170,11 +170,30 @@ export const logout = async (request, reply) => {
     const host = request.headers.host || '';
     const isHyperDataLab = origin.includes('hyperdatalab.org') || host.includes('hyperdatalab.org');
 
-    const cookieDomain = isHyperDataLab ? (process.env.COOKIE_DOMAIN?.trim() || '.hyperdatalab.org') : undefined;
+    const clearHeaders = [
+      // Xóa cookie cấp host (vietnam-api.hyperdatalab.org hoặc localhost)
+      'access_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax',
+      'access_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure',
+      'refresh_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax',
+      'refresh_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure',
+      'sso_access_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax',
+      'sso_access_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure',
+    ];
 
-    reply.clearCookie('access_token', getCookieOptions({ domain: cookieDomain }));
-    reply.clearCookie('refresh_token', getCookieOptions({ domain: cookieDomain }));
-    reply.clearCookie('sso_access_token', getCookieOptions({ domain: cookieDomain }));
+    if (isHyperDataLab) {
+      const parentDomain = process.env.COOKIE_DOMAIN?.trim() || '.hyperdatalab.org';
+      clearHeaders.push(
+        // Xóa cookie cấp root domain (.hyperdatalab.org) cho cả các biến thể Lax và None/Secure
+        `access_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax`,
+        `access_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`,
+        `refresh_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax`,
+        `refresh_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`,
+        `sso_access_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax`,
+        `sso_access_token=; Domain=${parentDomain}; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=None; Secure`,
+      );
+    }
+
+    reply.raw.setHeader('Set-Cookie', clearHeaders);
 
     return reply.status(200).send({
       success: true,
