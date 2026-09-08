@@ -8,7 +8,7 @@ import {
   getAuthCookieNames,
   getAuthCookieOptions,
   getClearAuthCookieOptions,
-  getParentCookieClearOptions,
+  getAuthCookieClearTargets,
   clearLegacyCookies,
 } from '../utils/authCookies.js';
 import { resolveLocalSsoUser } from '../services/sso.service.js';
@@ -174,35 +174,16 @@ export const logout = async (request, reply) => {
     const cookieNames = getAuthCookieNames();
     clearLegacyCookies(reply);
 
-    // Host-only cookie clear
-    reply.clearCookie(cookieNames.access, getClearAuthCookieOptions());
-    reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
-    reply.clearCookie('access_token', getClearAuthCookieOptions());
-    reply.clearCookie('refresh_token', getClearAuthCookieOptions());
-    reply.clearCookie('access_token', getClearAuthCookieOptions({ sameSite: 'lax' }));
-    reply.clearCookie('refresh_token', getClearAuthCookieOptions({ sameSite: 'lax' }));
-
-    // Domain cookie clear (.hyperdatalab.org and hyperdatalab.org)
-    const parentDomain = process.env.PARENT_COOKIE_DOMAIN?.trim() || '.hyperdatalab.org';
-    const dotDomain = parentDomain.startsWith('.') ? parentDomain : `.${parentDomain}`;
-    const bareDomain = dotDomain.slice(1);
-
-    for (const domain of [dotDomain, bareDomain]) {
-      for (const sameSite of ['none', 'lax']) {
-        reply.clearCookie('access_token', {
-          httpOnly: true,
-          secure: true,
-          sameSite,
-          path: '/',
-          domain,
-        });
-        reply.clearCookie('refresh_token', {
-          httpOnly: true,
-          secure: true,
-          sameSite,
-          path: '/',
-          domain,
-        });
+    const authCookieNames = new Set([
+      cookieNames.access,
+      cookieNames.refresh,
+      'access_token',
+      'refresh_token',
+    ]);
+    const clearTargets = getAuthCookieClearTargets();
+    for (const name of authCookieNames) {
+      for (const options of clearTargets) {
+        reply.clearCookie(name, options);
       }
     }
 

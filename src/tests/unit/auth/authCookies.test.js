@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   getAuthCookieNames,
   getAuthCookieOptions,
+  getAuthCookieClearTargets,
   getClearAuthCookieOptions,
   getParentCookieClearOptions,
 } from '../../../modules/auth/utils/authCookies.js';
@@ -35,5 +36,16 @@ describe('auth cookie contracts', () => {
     assert.equal(options.sameSite, 'none');
     assert.equal(options.path, '/');
     assert.equal(options.domain, '.hyperdatalab.org');
+  });
+
+  test('logout clear targets always include host-only, configured, and parent scopes', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.COOKIE_DOMAIN = '.vn.hyperdatalab.org';
+    process.env.PARENT_COOKIE_DOMAIN = '.hyperdatalab.org';
+
+    const targets = getAuthCookieClearTargets();
+    assert.equal(targets.some((options) => !Object.hasOwn(options, 'domain')), true);
+    assert.equal(targets.some((options) => options.domain === '.vn.hyperdatalab.org'), true);
+    assert.equal(targets.some((options) => options.domain === '.hyperdatalab.org'), true);
   });
 });

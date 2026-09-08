@@ -77,3 +77,36 @@ export const getParentCookieClearOptions = (overrides = {}) => ({
   domain: process.env.PARENT_COOKIE_DOMAIN?.trim() || '.hyperdatalab.org',
   ...overrides,
 });
+
+const cookieDomainVariants = (domain) => {
+  const bareDomain = String(domain || '').trim().replace(/^\./, '');
+  return bareDomain ? [`.${bareDomain}`, bareDomain] : [];
+};
+
+/**
+ * Return every cookie scope that logout must expire.
+ *
+ * The first target is deliberately host-only, even when COOKIE_DOMAIN is set,
+ * so cookies created by an older deployment cannot survive a configuration
+ * change. Domain targets cover both the configured child scope and the shared
+ * parent SSO scope.
+ */
+export const getAuthCookieClearTargets = () => {
+  const configuredOptions = getClearAuthCookieOptions();
+  const hostOnlyOptions = { ...configuredOptions };
+  delete hostOnlyOptions.domain;
+
+  const domainTargets = new Map();
+  if (configuredOptions.domain) {
+    cookieDomainVariants(configuredOptions.domain).forEach((domain) => {
+      domainTargets.set(domain, { ...configuredOptions, domain });
+    });
+  }
+
+  const parentOptions = getParentCookieClearOptions();
+  cookieDomainVariants(parentOptions.domain).forEach((domain) => {
+    domainTargets.set(domain, { ...parentOptions, domain });
+  });
+
+  return [hostOnlyOptions, ...domainTargets.values()];
+};
