@@ -17,7 +17,8 @@ afterEach(() => { process.env = { ...originalEnv }; });
 describe('isolated auth token contracts', () => {
   test('child access token has fixed issuer, audience, and token use', () => {
     process.env.NODE_ENV = 'test';
-    process.env.VN_JWT_SECRET = 'child-secret';
+    process.env.JWT_SECRET = 'shared-secret';
+    process.env.JWT_REFRESH_SECRET = 'refresh-secret';
     const token = signChildAccessToken({ user_id: 'child-1', email: 'user@example.com', role: 'STUDENT' });
     const decoded = verifyChildAccessToken(token);
     assert.equal(decoded.iss, CHILD_ACCESS_ISSUER);
@@ -25,22 +26,20 @@ describe('isolated auth token contracts', () => {
     assert.equal(decoded.token_use, 'access');
   });
 
-  test('parent and child secrets cannot be substituted', () => {
+  test('parent access token signed with shared JWT_SECRET is verified by Trending BE', () => {
     process.env.NODE_ENV = 'production';
-    process.env.PARENT_JWT_SECRET = 'parent-secret';
-    process.env.VN_JWT_SECRET = 'child-secret';
-    process.env.VN_JWT_REFRESH_SECRET = 'refresh-secret';
-    const parent = jwt.sign({ email: 'user@example.com' }, 'parent-secret', { algorithm: 'HS256', expiresIn: '1h' });
-    const child = signChildAccessToken({ user_id: 'child-1', email: 'user@example.com', role: 'STUDENT' });
-    assert.equal(verifyParentAccessToken(parent).email, 'user@example.com');
-    assert.throws(() => verifyChildAccessToken(parent));
-    assert.throws(() => verifyParentAccessToken(child));
+    process.env.JWT_SECRET = 'shared-secret';
+    process.env.JWT_REFRESH_SECRET = 'refresh-secret';
+    const parent = jwt.sign({ user_id: 'parent-1', email: 'user@example.com', role: 'STUDENT' }, 'shared-secret', { algorithm: 'HS256', expiresIn: '1h' });
+    const verified = verifyParentAccessToken(parent);
+    assert.equal(verified.email, 'user@example.com');
+    assert.equal(verified.user_id, 'parent-1');
   });
 
   test('access and refresh tokens cannot be substituted', () => {
     process.env.NODE_ENV = 'test';
-    process.env.VN_JWT_SECRET = 'child-secret';
-    process.env.VN_JWT_REFRESH_SECRET = 'refresh-secret';
+    process.env.JWT_SECRET = 'shared-secret';
+    process.env.JWT_REFRESH_SECRET = 'refresh-secret';
     const user = { user_id: 'child-1', email: 'user@example.com', role: 'STUDENT' };
     const access = signChildAccessToken(user);
     const refresh = signChildRefreshToken(user);
@@ -48,11 +47,11 @@ describe('isolated auth token contracts', () => {
     assert.throws(() => verifyChildRefreshToken(access));
   });
 
-  test('rejects a child-signed no-domain token as a parent assertion', () => {
+  test('rejects token signed with wrong secret', () => {
     process.env.NODE_ENV = 'production';
-    process.env.PARENT_JWT_SECRET = 'parent-secret';
-    process.env.VN_JWT_SECRET = 'child-secret';
-    const forged = jwt.sign({ email: 'admin@example.com', role: 'ADMINISTRATOR' }, 'child-secret', { algorithm: 'HS256' });
+    process.env.JWT_SECRET = 'shared-secret';
+    process.env.JWT_REFRESH_SECRET = 'refresh-secret';
+    const forged = jwt.sign({ email: 'admin@example.com', role: 'ADMINISTRATOR' }, 'wrong-secret', { algorithm: 'HS256' });
     assert.throws(() => verifyParentAccessToken(forged));
   });
 });
