@@ -2,9 +2,10 @@ import { loginWithEmailPassword, signRefreshToken, signToken } from '../services
 import { registerWithEmailPassword, activateAccount, resendActivationEmail } from '../services/register.service.js';
 import logger from '../../../utils/logger.js';
 import jwt from 'jsonwebtoken';
+import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
 import { isValidEmail } from '../../../utils/validation.js';
-import { getCookieOptions, getParentCookieClearOptions } from '../utils/authCookies.js';
+import { getCookieOptions, getParentCookieClearOptions, getAuthCookieNames } from '../utils/authCookies.js';
 
 export { getCookieOptions };
 
@@ -24,17 +25,14 @@ export const login = async (request, reply) => {
 
     const data = await loginWithEmailPassword({ email, password });
 
-    reply.setCookie('access_token', data.token, getCookieOptions({
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE),
-    }));
+    const cookieNames = getAuthCookieNames();
+    reply.setCookie(cookieNames.access, data.token, getAuthCookieOptions('access'));
 
     if (remember === true) {
       const refreshToken = signRefreshToken(data.user);
-      reply.setCookie('refresh_token', refreshToken, getCookieOptions({
-        maxAge: Number(process.env.COOKIE_REFRESH_MAX_AGE),
-      }));
+      reply.setCookie(cookieNames.refresh, refreshToken, getAuthCookieOptions('refresh'));
     } else {
-      reply.clearCookie('refresh_token', getCookieOptions());
+      reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
     }
 
     createLog({
@@ -68,7 +66,8 @@ export const login = async (request, reply) => {
 
 export const refreshToken = async (request, reply) => {
   try {
-    const refreshTokenValue = request.cookies.refresh_token;
+    const cookieNames = getAuthCookieNames();
+    const refreshTokenValue = request.cookies?.[cookieNames.refresh];
     
     if (!refreshTokenValue) {
       return reply.status(401).send({
@@ -80,9 +79,7 @@ export const refreshToken = async (request, reply) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(refreshTokenValue, process.env.JWT_REFRESH_SECRET, {
-        ignoreExpiration: true,
-      });
+      decoded = verifyChildRefreshToken(refreshTokenValue);
     } catch (jwtError) {
       return reply.status(401).send({
         success: false,
@@ -97,9 +94,7 @@ export const refreshToken = async (request, reply) => {
       role: decoded.role,
     });
 
-    reply.setCookie("access_token", newAccessToken, getCookieOptions({
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE),
-    }));
+    reply.setCookie(cookieNames.access, newAccessToken, getAuthCookieOptions('access'));
 
     return reply.status(200).send({
       success: true,
@@ -120,10 +115,9 @@ export const refreshToken = async (request, reply) => {
 
 export const checkAuth = async (request, reply) => {
   try {
-    let accessToken = request.cookies?.access_token;
-    if (!accessToken && request.headers.authorization?.startsWith('Bearer ')) {
-      accessToken = request.headers.authorization.split(' ')[1];
-    }
+    const accessToken = request.cookies?.access_token
+      || request.cookies?.[getAuthCookieNames?.()?.access]
+      || request.headers.authorization?.replace(/^Bearer\s+/i, '');
 
     if (!accessToken) {
       return reply.status(401).send({
@@ -134,12 +128,40 @@ export const checkAuth = async (request, reply) => {
       });
     }
 
-    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
+    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET || process.env.PARENT_JWT_SECRET);
+
+    if (decoded.domain === 'hyperdatalab.org' || decoded.iss === 'hyperdatalab.org') {
+      return reply.status(200).send({
+        success: true,
+        authenticated: true,
+        user: decoded,
+        data: {
+          user_id: decoded.user_id,
+          email: decoded.email,
+          role: decoded.role || 'USER',
+        },
+        access_token: accessToken,
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { user_id: decoded.user_id },
+      select: { user_id: true, email: true, role: true, status: true },
+    });
+
+    if (!user || user.status !== 'ACTIVE') {
+      return reply.status(403).send({ success: false, authenticated: false, code: 'ACCOUNT_UNAVAILABLE' });
+    }
 
     return reply.status(200).send({
       success: true,
       authenticated: true,
       user: decoded,
+      data: {
+        user_id: user.user_id,
+        email: user.email,
+        role: user.role,
+      },
       access_token: accessToken,
     });
 
@@ -177,6 +199,46 @@ export const logout = async (request, reply) => {
       code: "LOGOUT_FAILED",
       message: "CÃ³ lá»—i xáº£y ra á»Ÿ server",
     });
+  }
+};
+
+const ssoResponse = (reply, data) => {
+  const names = getAuthCookieNames();
+  reply.setCookie(names.access, data.token, getAuthCookieOptions('access', {
+    maxAge: data.sessionExpiresIn,
+  }));
+  return reply.status(200).send({
+    success: true,
+    authenticated: true,
+    code: 'SSO_BOOTSTRAP_SUCCESS',
+    data: {
+      user_id: data.user.user_id,
+      email: data.user.email,
+      role: data.user.role,
+    },
+  });
+};
+
+export const ssoBootstrap = async (request, reply) => {
+  try {
+    request.authCookieNames = getAuthCookieNames();
+    return ssoResponse(reply, await bootstrapSso({ request }));
+  } catch (error) {
+    if (error.code === 'LEGACY_COOKIE_CLEARED') {
+      reply.clearCookie('access_token', getClearAuthCookieOptions());
+      reply.clearCookie('refresh_token', getClearAuthCookieOptions());
+    }
+    return reply.status(error.statusCode || 500).send({ success: false, authenticated: false, code: error.code || 'SSO_FAILED', message: error.message });
+  }
+};
+
+export const ssoLogin = async (request, reply) => {
+  try {
+    request.authCookieNames = getAuthCookieNames();
+    reply.clearCookie(getAuthCookieNames().blocker, getClearAuthCookieOptions());
+    return ssoResponse(reply, await bootstrapSso({ request, explicit: true }));
+  } catch (error) {
+    return reply.status(error.statusCode || 500).send({ success: false, authenticated: false, code: error.code || 'SSO_FAILED', message: error.message });
   }
 };
 
@@ -308,13 +370,9 @@ export const googleLogin = async (request, reply) => {
 
     const data = await loginOrCreateWithGoogle(googleToken);
 
-    reply.setCookie('access_token', data.token, getCookieOptions({
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE) || 86400,
-    }));
-
-    reply.setCookie('refresh_token', data.refreshToken, getCookieOptions({
-      maxAge: Number(process.env.COOKIE_REFRESH_MAX_AGE) || 604800,
-    }));
+    const cookieNames = getAuthCookieNames();
+    reply.setCookie(cookieNames.access, data.token, getAuthCookieOptions('access'));
+    reply.setCookie(cookieNames.refresh, data.refreshToken, getAuthCookieOptions('refresh'));
 
     await createLog(data.user.user_id, 'LOGIN', 'Đăng nhập th� nh công bằng Google', request.ip);
 

@@ -1,8 +1,8 @@
-export const ACCESS_TOKEN_COOKIE = 'access_token';
+﻿export const ACCESS_TOKEN_COOKIE = 'access_token';
 export const REFRESH_TOKEN_COOKIE = 'refresh_token';
 
 /**
- * Danh sách tên cookie chuẩn dùng cho cả cha và con
+ * Danh sach ten cookie chuan dung cho ca cha va con
  */
 export const getAuthCookieNames = () => ({
   access: ACCESS_TOKEN_COOKIE,
@@ -10,8 +10,8 @@ export const getAuthCookieNames = () => ({
 });
 
 /**
- * Cookie options cho subdomain con (vn.hyperdatalab.org hoặc localhost)
- * @param {Object} extra - Các options mở rộng (maxAge, domain, ...)
+ * Cookie options cho subdomain con (vn.hyperdatalab.org hoac localhost)
+ * @param {Object} extra - Cac options mo rong (maxAge, domain, ...)
  */
 export const getCookieOptions = (extra = {}) => {
   const isProd = process.env.NODE_ENV?.trim() === 'production';
@@ -27,6 +27,10 @@ export const getCookieOptions = (extra = {}) => {
   };
 };
 
+export const getAuthCookieOptions = (kind, overrides = {}) => {
+  return getCookieOptions(overrides);
+};
+
 export const getChildCookieOptions = (kind = 'access', extra = {}) => {
   return getCookieOptions(extra);
 };
@@ -37,7 +41,7 @@ export const getClearAuthCookieOptions = (extra = {}) => {
 
 /**
  * Cookie clear options cho domain cha (.hyperdatalab.org)
- * Dùng khi user nhấn Logout tại site con để xóa session của cha
+ * Dung khi user nhan Logout tai site con de xoa session cua cha
  */
 export const getParentCookieClearOptions = (extra = {}) => {
   const isProd = process.env.NODE_ENV?.trim() === 'production';

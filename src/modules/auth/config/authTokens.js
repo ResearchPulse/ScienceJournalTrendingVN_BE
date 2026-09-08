@@ -2,10 +2,12 @@ import jwt from 'jsonwebtoken';
 
 export const PARENT_DOMAIN = 'hyperdatalab.org';
 export const CHILD_DOMAIN = 'vn.hyperdatalab.org';
+export const CHILD_ACCESS_ISSUER = 'vietnam-api.hyperdatalab.org';
+export const CHILD_ACCESS_AUDIENCE = 'vn.hyperdatalab.org';
 
 /**
- * Kiểm tra xem token payload có phải được phát hành bởi hệ thống cha (hyperdatalab.org) hay không
- * @param {Object} decoded - Payload đã giải mã của JWT
+ * Kiem tra xem token payload co phai duoc phat hanh boi he thong cha (hyperdatalab.org) hay khong
+ * @param {Object} decoded - Payload da giai ma cua JWT
  * @returns {boolean}
  */
 export const isParentToken = (decoded) => {
@@ -14,18 +16,23 @@ export const isParentToken = (decoded) => {
 };
 
 /**
- * Lấy JWT Secret chung cho hệ thống
+ * Lay JWT Secret chung cho he thong
  */
 export const getJwtSecret = () => {
-  const secret = process.env.JWT_SECRET || process.env.PARENT_JWT_SECRET;
+  const secret = process.env.JWT_SECRET || process.env.VN_JWT_SECRET || process.env.PARENT_JWT_SECRET;
   if (!secret) {
     throw new Error('Missing JWT_SECRET in environment variables');
   }
   return secret;
 };
 
+export const getChildAccessSecret = () => process.env.VN_JWT_SECRET || getJwtSecret();
+export const getChildRefreshSecret = () => process.env.VN_JWT_REFRESH_SECRET || process.env.JWT_REFRESH_SECRET || getJwtSecret();
+export const getParentAccessSecret = () => process.env.PARENT_JWT_SECRET || getJwtSecret();
+export const getSsoBlockSecret = () => process.env.VN_SSO_BLOCK_SECRET || getJwtSecret();
+
 /**
- * Xác minh access token với JWT_SECRET
+ * Xac minh access token voi JWT_SECRET
  * @param {string} token
  * @returns {Object} decoded payload
  */
@@ -35,7 +42,7 @@ export const verifyAccessToken = (token) => {
 };
 
 /**
- * Ký token mới cho site con vn.hyperdatalab.org
+ * Ky token moi cho site con vn.hyperdatalab.org
  * @param {Object} user
  * @param {Object} extra
  */
@@ -47,6 +54,7 @@ export const signChildAccessToken = (user, extra = {}) => {
       email: user.email,
       role: user.role,
       domain: process.env.COOKIE_DOMAIN?.replace(/^\./, '') || CHILD_DOMAIN,
+      token_use: 'access',
       ...extra,
     },
     secret,
@@ -55,4 +63,50 @@ export const signChildAccessToken = (user, extra = {}) => {
       expiresIn: process.env.JWT_EXPIRES_IN || '1d',
     }
   );
+};
+
+export const signChildRefreshToken = (user, extra = {}) => {
+  const secret = process.env.JWT_REFRESH_SECRET || process.env.VN_JWT_REFRESH_SECRET || getJwtSecret();
+  return jwt.sign(
+    {
+      user_id: user.user_id,
+      email: user.email,
+      role: user.role,
+      domain: process.env.COOKIE_DOMAIN?.replace(/^\./, '') || CHILD_DOMAIN,
+      token_use: 'refresh',
+      ...extra,
+    },
+    secret,
+    {
+      algorithm: 'HS256',
+      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
+    }
+  );
+};
+
+export const verifyChildAccessToken = (token) => {
+  return verifyAccessToken(token);
+};
+
+export const verifyChildRefreshToken = (token) => {
+  const secret = process.env.JWT_REFRESH_SECRET || process.env.VN_JWT_REFRESH_SECRET || getJwtSecret();
+  return jwt.verify(token, secret, { algorithms: ['HS256'] });
+};
+
+export const signActivationToken = (user) => {
+  const secret = getJwtSecret();
+  return jwt.sign(
+    { user_id: user.user_id, email: user.email, token_use: 'activation' },
+    secret,
+    { algorithm: 'HS256', expiresIn: '24h' }
+  );
+};
+
+export const verifyActivationToken = (token) => {
+  const secret = getJwtSecret();
+  return jwt.verify(token, secret, { algorithms: ['HS256'] });
+};
+
+export const verifyParentAccessToken = (token) => {
+  return verifyAccessToken(token);
 };

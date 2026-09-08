@@ -23,14 +23,14 @@ export const requireAuth = async (request, reply) => {
     if (!token) {
       return reply.status(401).send({
         success: false,
-        message: 'Không tìm thấy token xác thực hoặc token không hợp lệ'
+        message: 'Khong tim thay token xac thuc hoac token khong hop le'
       });
     }
 
     if (!process.env.JWT_SECRET) {
       return reply.status(500).send({
         success: false,
-        message: 'Lỗi cấu hình JWT trên server'
+        message: 'Loi cau hinh JWT tren server'
       });
     }
 
@@ -42,7 +42,7 @@ export const requireAuth = async (request, reply) => {
   } catch (error) {
     return reply.status(401).send({
       success: false,
-      message: 'Token xác thực không hợp lệ hoặc đã hết hạn'
+      message: 'Token xac thuc khong hop le hoac da het han'
     });
   }
 };
@@ -63,15 +63,15 @@ export const verifyToken = async (request, reply) => {
     return reply.status(401).send({
       success: false,
       code: "ACCESS_TOKEN_MISSING",
-      message: "Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn"
+      message: "Ban chua dang nhap hoac phien lam viec da het han"
     });
   }
 
   try {
     const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
 
-    // Stateless Verification cho token do hệ thống cha (hyperdatalab.org) phát hành
-    // Không truy vấn DB nội bộ, gán thẳng dữ liệu vào request.user
+    // Stateless Verification cho token do he thong cha (hyperdatalab.org) phat hanh
+    // Khong truy van DB noi bo, gan thang du lieu vao request.user
     if (isParentToken(decoded)) {
       request.user = {
         ...decoded,
@@ -84,7 +84,7 @@ export const verifyToken = async (request, reply) => {
       return;
     }
 
-    // Đối với token do site con cấp: kiểm tra trong DB nội bộ
+    // Doi voi token do site con cap: kiem tra trong DB noi bo
     let user = null;
     if (decoded.user_id) {
       user = await authUserRepository.findById(decoded.user_id);
@@ -98,7 +98,7 @@ export const verifyToken = async (request, reply) => {
       return reply.status(403).send({
         success: false,
         code: "ACCOUNT_UNAVAILABLE",
-        message: "Tài khoản của bạn đã bị khóa hoặc chưa được kích hoạt"
+        message: "Tai khoan cua ban da bi khoa hoac chua duoc kich hoat"
       });
     }
 
@@ -113,7 +113,7 @@ export const verifyToken = async (request, reply) => {
     return reply.status(401).send({
       success: false,
       code: "ACCESS_TOKEN_EXPIRED",
-      message: "Access token không hợp lệ hoặc đã hết hạn"
+      message: "Access token khong hop le hoac da het han"
     });
   }
 };
@@ -122,7 +122,7 @@ export const verifyAdmin = async (request, reply) => {
   if (!request.user) {
     return reply.status(401).send({
       success: false,
-      message: 'Xác thực không thành công, không tìm thấy thông tin người dùng.',
+      message: 'Xac thuc khong thanh cong, khong tim thay thong tin nguoi dung.',
       code: 'UNAUTHENTICATED'
     });
   }
@@ -133,12 +133,12 @@ export const verifyAdmin = async (request, reply) => {
       userRole: request.user.role,
       action: 'SYSTEM',
       level: 'WARNING',
-      message: `Tài khoản ${request.user.email} cố gắng truy cập tài nguyên Admin (Bị từ chối)`,
+      message: `Tai khoan ${request.user.email} co gang truy cap tai nguyen Admin (Bi tu choi)`,
       metadata: { ip: request.ip, path: request.url }
     });
     return reply.status(403).send({
       success: false,
-      message: 'Bạn không có quyền truy cập tài nguyên này',
+      message: 'Ban khong co quyen truy cap tai nguyen nay',
       code: 'NO_PERMISSION'
     });
   }

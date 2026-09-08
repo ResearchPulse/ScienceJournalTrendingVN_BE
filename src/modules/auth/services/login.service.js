@@ -1,6 +1,7 @@
 ﻿import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import prisma from '../../../config/prisma.js';
+import { signChildAccessToken, signChildRefreshToken } from '../config/authTokens.js';
 
 const buildLoginError = () => {
   const error = new Error('Email hoac mat khau khong dung');
@@ -9,43 +10,11 @@ const buildLoginError = () => {
 };
 
 export const signToken = (user, extraClaims = {}) => {
-  if (!process.env.JWT_SECRET) {
-    throw new Error('Missing JWT_SECRET in environment variables');
-  }
-
-  return jwt.sign(
-    {
-      user_id: user.user_id,
-      email: user.email,
-      role: user.role,
-      domain: process.env.COOKIE_DOMAIN?.replace(/^\./, '') || 'vn.hyperdatalab.org',
-      ...extraClaims,
-    },
-    process.env.JWT_SECRET,
-    {
-      expiresIn: process.env.JWT_EXPIRES_IN || '1d',
-    }
-  );
+  return signChildAccessToken(user, extraClaims);
 };
 
 export const signRefreshToken = (user, extraClaims = {}) => {
-  if (!process.env.JWT_REFRESH_SECRET) {
-    throw new Error('Missing JWT_REFRESH_SECRET in environment variables');
-  }
-
-  return jwt.sign(
-    {
-      user_id: user.user_id,
-      email: user.email,
-      role: user.role,
-      domain: process.env.COOKIE_DOMAIN?.replace(/^\./, '') || 'vn.hyperdatalab.org',
-      ...extraClaims,
-    },
-    process.env.JWT_REFRESH_SECRET,
-    {
-      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
-    }
-  );
+  return signChildRefreshToken(user, extraClaims);
 };
 
 export const loginWithEmailPassword = async ({ email, password }) => {
