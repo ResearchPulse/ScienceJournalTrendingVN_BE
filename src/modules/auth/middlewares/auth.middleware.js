@@ -1,8 +1,8 @@
 import prisma from '../../../config/prisma.js';
 import { createLog } from '../../system/services/log.service.js';
-import { verifyChildAccessToken } from '../config/authTokens.js';
+import { verifyChildAccessToken, verifyParentAccessToken } from '../config/authTokens.js';
 import { getAuthCookieNames } from '../utils/authCookies.js';
-import { verifyBlocker } from '../services/sso.service.js';
+import { resolveLocalSsoUser } from '../services/sso.service.js';
 
 const reject = (reply, statusCode, code, message) => reply.status(statusCode).send({
   success: false,
@@ -17,22 +17,15 @@ export const authUserRepository = {
   }),
 };
 
-const attachCurrentUser = async (request, reply, decoded) => {
+const currentLocalUser = async (decoded) => {
   const user = await authUserRepository.findById(decoded.user_id);
   if (!user || user.status !== 'ACTIVE') {
-    reject(reply, 403, 'ACCOUNT_UNAVAILABLE', 'Tài khoản không còn hoạt động');
-    return false;
+    const error = new Error('Local account is unavailable');
+    error.statusCode = 403;
+    error.code = 'ACCOUNT_UNAVAILABLE';
+    throw error;
   }
-
-  if (decoded.auth_source === 'parent_sso' && decoded.parent_fingerprint) {
-    const blocker = verifyBlocker(request.cookies?.[getAuthCookieNames().blocker]);
-    if (blocker?.fingerprint === decoded.parent_fingerprint) {
-      reject(reply, 401, 'SSO_BLOCKED', 'SSO session was ended on this child system');
-      return false;
-    }
-  }
-
-  request.user = {
+  return {
     ...decoded,
     user_id: user.user_id,
     email: user.email,
@@ -40,36 +33,79 @@ const attachCurrentUser = async (request, reply, decoded) => {
     status: user.status,
     type: user.type,
   };
-  return true;
+};
+
+const parentLocalUser = async (decoded) => {
+  const user = await resolveLocalSsoUser(decoded.email || decoded.username);
+  return {
+    user_id: user.user_id,
+    email: user.email,
+    role: user.role,
+    status: user.status,
+    type: user.type,
+    auth_source: 'parent_sso',
+  };
 };
 
 const tokenFromRequest = (request) => {
-  const authHeader = request.headers.authorization;
-  if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7).trim();
-  return request.cookies?.[getAuthCookieNames().access] || null;
+  const bearer = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1]?.trim();
+  if (bearer) return { token: bearer, source: 'bearer' };
+
+  const childToken = request.cookies?.[getAuthCookieNames().access];
+  if (childToken) return { token: childToken, source: 'child' };
+
+  const parentToken = request.cookies?.access_token;
+  return parentToken ? { token: parentToken, source: 'parent' } : null;
 };
 
-export const requireAuth = async (request, reply) => {
-  const token = tokenFromRequest(request);
-  if (!token) return reject(reply, 401, 'ACCESS_TOKEN_MISSING', 'Không tìm thấy token xác thực');
+export const resolveAuthenticatedUser = async (request) => {
+  const candidate = tokenFromRequest(request);
+  if (!candidate) {
+    const error = new Error('Authentication token missing');
+    error.statusCode = 401;
+    error.code = 'ACCESS_TOKEN_MISSING';
+    throw error;
+  }
+
+  if (candidate.source === 'child') {
+    return currentLocalUser(verifyChildAccessToken(candidate.token));
+  }
+  if (candidate.source === 'parent') {
+    return parentLocalUser(verifyParentAccessToken(candidate.token));
+  }
+
   try {
-    const decoded = verifyChildAccessToken(token);
-    await attachCurrentUser(request, reply, decoded);
-  } catch (error) {
-    if (!reply.sent) reject(reply, 401, 'ACCESS_TOKEN_INVALID', 'Token xác thực không hợp lệ hoặc đã hết hạn');
+    return await currentLocalUser(verifyChildAccessToken(candidate.token));
+  } catch (childError) {
+    if (childError.statusCode === 403) throw childError;
+    return parentLocalUser(verifyParentAccessToken(candidate.token));
   }
 };
 
-export const verifyToken = async (request, reply) => {
-  const token = tokenFromRequest(request);
-  if (!token) return reject(reply, 401, 'ACCESS_TOKEN_MISSING', 'Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn');
+const authenticate = async (request, reply, missingMessage, invalidMessage) => {
   try {
-    const decoded = verifyChildAccessToken(token);
-    await attachCurrentUser(request, reply, decoded);
+    request.user = await resolveAuthenticatedUser(request);
   } catch (error) {
-    if (!reply.sent) reject(reply, 401, 'ACCESS_TOKEN_INVALID', 'Access token không hợp lệ hoặc đã hết hạn');
+    const statusCode = error.statusCode || 401;
+    const code = error.code || (statusCode === 401 ? 'ACCESS_TOKEN_INVALID' : 'ACCOUNT_UNAVAILABLE');
+    const message = code === 'ACCESS_TOKEN_MISSING' ? missingMessage : (error.message || invalidMessage);
+    if (!reply.sent) reject(reply, statusCode, code, message);
   }
 };
+
+export const requireAuth = async (request, reply) => authenticate(
+  request,
+  reply,
+  'Không tìm thấy token xác thực',
+  'Token xác thực không hợp lệ hoặc đã hết hạn',
+);
+
+export const verifyToken = async (request, reply) => authenticate(
+  request,
+  reply,
+  'Bạn chưa đăng nhập hoặc phiên làm việc đã hết hạn',
+  'Access token không hợp lệ hoặc đã hết hạn',
+);
 
 export const verifyAdmin = async (request, reply) => {
   if (!request.user) return reject(reply, 401, 'UNAUTHENTICATED', 'Xác thực không thành công');

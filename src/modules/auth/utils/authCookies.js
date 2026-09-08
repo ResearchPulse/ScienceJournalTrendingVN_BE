@@ -47,3 +47,11 @@ export const getClearAuthCookieOptions = () => ({
   sameSite: 'lax',
   path: '/',
 });
+
+export const getParentCookieClearOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
+  domain: '.hyperdatalab.org',
+});
