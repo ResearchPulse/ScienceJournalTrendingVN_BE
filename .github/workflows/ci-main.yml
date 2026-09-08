@@ -91,6 +91,8 @@ jobs:
           context: .
           push: true
           tags: |
+            ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:latest
+            ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:${{ github.sha }}
             ghcr.io/phunghao2701/scientificjournalsystem-vietnam-be:latest
             ghcr.io/phunghao2701/scientificjournalsystem-vietnam-be:${{ github.sha }}
 
@@ -109,6 +111,6 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             cd ~/apps/researchpulse-vn-be
-            docker-compose pull
-            docker-compose up -d --force-recreate
+            docker-compose pull || docker compose pull
+            docker-compose up -d --force-recreate || docker compose up -d --force-recreate
             docker image prune -f

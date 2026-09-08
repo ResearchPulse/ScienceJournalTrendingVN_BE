@@ -11,7 +11,7 @@ process.env.PARENT_JWT_SECRET = 'parent-secret';
 process.env.VN_SSO_BLOCK_SECRET = 'block-secret';
 
 describe('logout cookie clear contracts', () => {
-  test('logout clears only child-owned cookies', async () => {
+  test('logout clears host and parent domain cookies', async () => {
     const app = Fastify();
     await app.register(cookie);
     app.post('/api/auth/logout', logout);
@@ -22,27 +22,8 @@ describe('logout cookie clear contracts', () => {
     const names = getAuthCookieNames();
     assert.equal(cookies.some((value) => value.includes(`${names.access}=`)), true);
     assert.equal(cookies.some((value) => value.includes(`${names.refresh}=`)), true);
-    assert.equal(cookies.some((value) => value.toLowerCase().includes('domain=.hyperdatalab.org')), false);
-    await app.close();
-  });
-
-  test('logout keeps parent cookies and sets a host-only blocker for the current parent token', async () => {
-    const app = Fastify();
-    await app.register(cookie);
-    app.post('/api/auth/logout', logout);
-    const parentToken = jwt.sign({ email: 'user@example.com' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/auth/logout',
-      cookies: { access_token: parentToken, refresh_token: 'parent-refresh' },
-    });
-
-    const cookies = [].concat(response.headers['set-cookie'] || []);
-    const names = getAuthCookieNames();
-    assert.equal(cookies.some((value) => value.includes(`${names.blocker}=`)), true);
-    assert.equal(cookies.some((value) => /(?:^|;\s*)access_token=/i.test(value)), false);
-    assert.equal(cookies.some((value) => /(?:^|;\s*)refresh_token=/i.test(value)), false);
-    assert.equal(cookies.some((value) => value.toLowerCase().includes('domain=')), false);
+    assert.equal(cookies.some((value) => value.toLowerCase().includes('domain=.hyperdatalab.org')), true);
+    assert.equal(cookies.some((value) => value.toLowerCase().includes('domain=hyperdatalab.org')), true);
     await app.close();
   });
 });

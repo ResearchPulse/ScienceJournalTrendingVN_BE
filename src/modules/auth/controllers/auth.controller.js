@@ -173,18 +173,37 @@ export const logout = async (request, reply) => {
   try {
     const cookieNames = getAuthCookieNames();
     clearLegacyCookies(reply);
+
+    // Host-only cookie clear
     reply.clearCookie(cookieNames.access, getClearAuthCookieOptions());
     reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
     reply.clearCookie('access_token', getClearAuthCookieOptions());
     reply.clearCookie('refresh_token', getClearAuthCookieOptions());
+    reply.clearCookie('access_token', getClearAuthCookieOptions({ sameSite: 'lax' }));
+    reply.clearCookie('refresh_token', getClearAuthCookieOptions({ sameSite: 'lax' }));
 
-    const parentOptions = getParentCookieClearOptions();
-    reply.clearCookie('access_token', parentOptions);
-    reply.clearCookie('refresh_token', parentOptions);
+    // Domain cookie clear (.hyperdatalab.org and hyperdatalab.org)
+    const parentDomain = process.env.PARENT_COOKIE_DOMAIN?.trim() || '.hyperdatalab.org';
+    const dotDomain = parentDomain.startsWith('.') ? parentDomain : `.${parentDomain}`;
+    const bareDomain = dotDomain.slice(1);
 
-    if (parentOptions.domain?.startsWith('.')) {
-      reply.clearCookie('access_token', { ...parentOptions, domain: parentOptions.domain.slice(1) });
-      reply.clearCookie('refresh_token', { ...parentOptions, domain: parentOptions.domain.slice(1) });
+    for (const domain of [dotDomain, bareDomain]) {
+      for (const sameSite of ['none', 'lax']) {
+        reply.clearCookie('access_token', {
+          httpOnly: true,
+          secure: true,
+          sameSite,
+          path: '/',
+          domain,
+        });
+        reply.clearCookie('refresh_token', {
+          httpOnly: true,
+          secure: true,
+          sameSite,
+          path: '/',
+          domain,
+        });
+      }
     }
 
     return reply.status(200).send({
