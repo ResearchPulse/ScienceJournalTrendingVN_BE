@@ -132,21 +132,18 @@ export const checkAuth = async (request, reply) => {
     const decoded = verifyAccessToken(accessToken);
 
     if (isParentToken(decoded)) {
+      const parentUser = {
+        user_id: decoded.user_id || decoded.userId || decoded.id || decoded.sub || '',
+        email: decoded.email || decoded.username || '',
+        role: decoded.role || 'USER',
+        auth_source: 'parent_sso',
+      };
+
       return reply.status(200).send({
         success: true,
         authenticated: true,
-        user: {
-          user_id: decoded.user_id,
-          email: decoded.email,
-          role: decoded.role || 'USER',
-          auth_source: 'parent_sso',
-        },
-        data: {
-          user_id: decoded.user_id,
-          email: decoded.email,
-          role: decoded.role || 'USER',
-          auth_source: 'parent_sso',
-        },
+        user: parentUser,
+        data: parentUser,
         access_token: accessToken,
       });
     }
@@ -160,15 +157,18 @@ export const checkAuth = async (request, reply) => {
       return reply.status(403).send({ success: false, authenticated: false, code: 'ACCOUNT_UNAVAILABLE' });
     }
 
+    const localUser = {
+      user_id: user.user_id,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+    };
+
     return reply.status(200).send({
       success: true,
       authenticated: true,
-      user: decoded,
-      data: {
-        user_id: user.user_id,
-        email: user.email,
-        role: user.role,
-      },
+      user: localUser,
+      data: localUser,
       access_token: accessToken,
     });
 

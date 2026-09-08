@@ -60,8 +60,10 @@ export const verifyAccessToken = (token) => {
   try {
     const decoded = jwt.decode(token);
     if (decoded && (decoded.user_id || decoded.userId || decoded.email || decoded.sub)) {
-      // Chuẩn hóa trường user_id
-      decoded.user_id = decoded.user_id || decoded.userId || decoded.id || decoded.sub;
+      // Chuẩn hóa trường user_id, email, role
+      decoded.user_id = decoded.user_id || decoded.userId || decoded.id || decoded.sub || '';
+      decoded.email = decoded.email || decoded.username || '';
+      decoded.role = decoded.role || 'USER';
 
       // Kiểm tra hạn sử dụng nếu có claim exp
       if (decoded.exp) {
