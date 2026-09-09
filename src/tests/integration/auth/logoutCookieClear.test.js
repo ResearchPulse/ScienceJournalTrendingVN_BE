@@ -24,17 +24,21 @@ describe('logout cookie clear contracts', () => {
       const cookies = [].concat(response.headers['set-cookie'] || []);
       const names = getAuthCookieNames();
 
-      for (const name of [names.access, names.refresh]) {
+      for (const name of [names.access, names.refresh, names.blocker]) {
         const deletions = cookies.filter((value) => value.startsWith(`${name}=`));
         assert.equal(
           deletions.some((value) => !/;\s*domain=/i.test(value) && /expires=thu, 01 jan 1970/i.test(value)),
           true,
           `${name} must be deleted as a host-only cookie`,
         );
+      }
+
+      for (const name of ['access_token', 'refresh_token']) {
+        const deletions = cookies.filter((value) => value.startsWith(`${name}=`));
         assert.equal(
           deletions.some((value) => /;\s*domain=\.?hyperdatalab\.org/i.test(value) && /expires=thu, 01 jan 1970/i.test(value)),
           true,
-          `${name} must be deleted as a shared parent-domain cookie`,
+          `${name} must be deleted from the shared parent domain`,
         );
       }
     } finally {

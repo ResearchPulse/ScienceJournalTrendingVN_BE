@@ -3,15 +3,18 @@ import { registerWithEmailPassword, activateAccount, resendActivationEmail } fro
 import logger from '../../../utils/logger.js';
 import { createLog } from '../../system/services/log.service.js';
 import { isValidEmail } from '../../../utils/validation.js';
-import { verifyChildRefreshToken, verifyParentRefreshToken } from '../config/authTokens.js';
+import { verifyChildRefreshToken } from '../config/authTokens.js';
 import {
   getAuthCookieNames,
   getAuthCookieOptions,
   getClearAuthCookieOptions,
   getAuthCookieClearTargets,
-  clearLegacyCookies,
 } from '../utils/authCookies.js';
-import { resolveLocalSsoUser } from '../services/sso.service.js';
+import {
+  bootstrapSso,
+  createLogoutBlocker,
+  inspectParentCookie,
+} from '../services/sso.service.js';
 import { resolveAuthenticatedUser } from '../middlewares/auth.middleware.js';
 
 export const login = async (request, reply) => {
@@ -31,7 +34,6 @@ export const login = async (request, reply) => {
     const data = await loginWithEmailPassword({ email, password });
 
     const cookieNames = getAuthCookieNames();
-    clearLegacyCookies(reply);
     reply.setCookie(cookieNames.access, data.token, getAuthCookieOptions('access'));
 
     if (remember === true) {
@@ -73,9 +75,7 @@ export const login = async (request, reply) => {
 export const refreshToken = async (request, reply) => {
   try {
     const cookieNames = getAuthCookieNames();
-    const childRefreshToken = request.cookies?.[cookieNames.refresh];
-    const parentRefreshToken = request.cookies?.refresh_token;
-    const refreshTokenValue = childRefreshToken || parentRefreshToken;
+    const refreshTokenValue = request.cookies?.[cookieNames.refresh];
     
     if (!refreshTokenValue) {
       return reply.status(401).send({
@@ -87,9 +87,7 @@ export const refreshToken = async (request, reply) => {
 
     let decoded;
     try {
-      decoded = childRefreshToken
-        ? verifyChildRefreshToken(refreshTokenValue)
-        : verifyParentRefreshToken(refreshTokenValue);
+      decoded = verifyChildRefreshToken(refreshTokenValue);
     } catch (jwtError) {
       return reply.status(401).send({
         success: false,
@@ -98,12 +96,9 @@ export const refreshToken = async (request, reply) => {
       });
     }
 
-    const user = childRefreshToken
-      ? { user_id: decoded.user_id, email: decoded.email, role: decoded.role }
-      : await resolveLocalSsoUser(decoded.email || decoded.username);
+    const user = { user_id: decoded.user_id, email: decoded.email, role: decoded.role };
     const newAccessToken = signToken(user);
 
-    clearLegacyCookies(reply);
     reply.setCookie(cookieNames.access, newAccessToken, getAuthCookieOptions('access'));
 
     return reply.status(200).send({
@@ -126,8 +121,7 @@ export const refreshToken = async (request, reply) => {
 export const checkAuth = async (request, reply) => {
   try {
     const accessToken = request.headers.authorization?.replace(/^Bearer\s+/i, '')
-      || request.cookies?.[getAuthCookieNames().access]
-      || request.cookies?.access_token;
+      || request.cookies?.[getAuthCookieNames().access];
 
     if (!accessToken) {
       return reply.status(401).send({
@@ -139,7 +133,6 @@ export const checkAuth = async (request, reply) => {
     }
 
     const user = await resolveAuthenticatedUser(request);
-    clearLegacyCookies(reply);
     return reply.status(200).send({
       success: true,
       authenticated: true,
@@ -156,7 +149,6 @@ export const checkAuth = async (request, reply) => {
         role: user.role,
         status: user.status,
       },
-      access_token: accessToken,
     });
 
   } catch (error) {
@@ -172,11 +164,12 @@ export const checkAuth = async (request, reply) => {
 export const logout = async (request, reply) => {
   try {
     const cookieNames = getAuthCookieNames();
-    clearLegacyCookies(reply);
+    const parentToken = inspectParentCookie(request);
 
     const authCookieNames = new Set([
       cookieNames.access,
       cookieNames.refresh,
+      cookieNames.blocker,
       'access_token',
       'refresh_token',
     ]);
@@ -184,6 +177,17 @@ export const logout = async (request, reply) => {
     for (const name of authCookieNames) {
       for (const options of clearTargets) {
         reply.clearCookie(name, options);
+      }
+    }
+
+    if (parentToken) {
+      try {
+        const blocker = createLogoutBlocker(parentToken);
+        reply.setCookie(cookieNames.blocker, blocker.value, getAuthCookieOptions('access', {
+          maxAge: Math.max(1, blocker.exp - Math.floor(Date.now() / 1000)),
+        }));
+      } catch {
+        // An invalid parent cookie must not prevent logout.
       }
     }
 
@@ -221,12 +225,14 @@ const ssoResponse = (reply, data) => {
 
 export const ssoBootstrap = async (request, reply) => {
   try {
-    request.authCookieNames = getAuthCookieNames();
     return ssoResponse(reply, await bootstrapSso({ request }));
   } catch (error) {
     if (error.code === 'LEGACY_COOKIE_CLEARED') {
-      reply.clearCookie('access_token', getClearAuthCookieOptions());
-      reply.clearCookie('refresh_token', getClearAuthCookieOptions());
+      for (const name of ['access_token', 'refresh_token']) {
+        for (const options of getAuthCookieClearTargets()) {
+          reply.clearCookie(name, options);
+        }
+      }
     }
     return reply.status(error.statusCode || 500).send({ success: false, authenticated: false, code: error.code || 'SSO_FAILED', message: error.message });
   }
@@ -234,7 +240,6 @@ export const ssoBootstrap = async (request, reply) => {
 
 export const ssoLogin = async (request, reply) => {
   try {
-    request.authCookieNames = getAuthCookieNames();
     reply.clearCookie(getAuthCookieNames().blocker, getClearAuthCookieOptions());
     return ssoResponse(reply, await bootstrapSso({ request, explicit: true }));
   } catch (error) {

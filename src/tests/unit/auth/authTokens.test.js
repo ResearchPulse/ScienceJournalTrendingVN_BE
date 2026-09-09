@@ -5,6 +5,7 @@ import {
   CHILD_ACCESS_AUDIENCE,
   CHILD_ACCESS_ISSUER,
   signChildAccessToken,
+  signActivationToken,
   signChildRefreshToken,
   verifyChildAccessToken,
   verifyChildRefreshToken,
@@ -45,6 +46,15 @@ describe('isolated auth token contracts', () => {
     const refresh = signChildRefreshToken(user);
     assert.throws(() => verifyChildAccessToken(refresh));
     assert.throws(() => verifyChildRefreshToken(access));
+  });
+
+  test('no child-issued token can be substituted for a parent session', () => {
+    process.env.NODE_ENV = 'test';
+    process.env.JWT_SECRET = 'shared-secret';
+    process.env.JWT_REFRESH_SECRET = 'refresh-secret';
+    delete process.env.PARENT_JWT_SECRET;
+    const activation = signActivationToken({ user_id: 'child-1', email: 'user@example.com' });
+    assert.throws(() => verifyParentAccessToken(activation));
   });
 
   test('rejects token signed with wrong secret', () => {

@@ -4,7 +4,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import formbody from '@fastify/formbody';
-import { getAuthCookieNames, clearLegacyCookies } from './modules/auth/utils/authCookies.js';
+import { getAuthCookieNames } from './modules/auth/utils/authCookies.js';
 
 
 // Tạm thời comment rootRouter express cũ
@@ -61,9 +61,6 @@ const buildApp = async () => {
   });
 
   app.addHook('onRequest', async (request, reply) => {
-    if (request.cookies?.vn_access_token_dev || request.cookies?.vn_refresh_token_dev || request.cookies?.['__Host-vn_access_token'] || request.cookies?.['__Host-vn_refresh_token']) {
-      clearLegacyCookies(reply);
-    }
     const sessionRoute = request.url.startsWith('/api/v1/auth/sso/')
       || request.url.startsWith('/api/v1/auth/logout')
       || request.url.startsWith('/api/v1/auth/refresh');

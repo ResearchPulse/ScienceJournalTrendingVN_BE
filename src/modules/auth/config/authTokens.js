@@ -3,15 +3,18 @@ import jwt from 'jsonwebtoken';
 export const CHILD_ACCESS_ISSUER = 'vietnam-api.hyperdatalab.org';
 export const CHILD_ACCESS_AUDIENCE = 'vn.hyperdatalab.org';
 
-const requiredSecret = (name) => {
-  const value = process.env[name]?.trim();
-  if (value) return value;
-  throw new Error(`Missing ${name} in environment variables`);
+const requiredSecret = (...names) => {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  throw new Error(`Missing ${names.join(' or ')} in environment variables`);
 };
 
-export const getChildAccessSecret = () => requiredSecret('JWT_SECRET');
-export const getChildRefreshSecret = () => requiredSecret('JWT_REFRESH_SECRET');
-export const getParentAccessSecret = () => requiredSecret('JWT_SECRET');
+export const getChildAccessSecret = () => requiredSecret('VN_JWT_SECRET', 'JWT_SECRET');
+export const getChildRefreshSecret = () => requiredSecret('VN_JWT_REFRESH_SECRET', 'JWT_REFRESH_SECRET');
+export const getParentAccessSecret = () => requiredSecret('PARENT_JWT_SECRET', 'JWT_SECRET');
+export const getSsoBlockSecret = () => requiredSecret('VN_SSO_BLOCK_SECRET', 'VN_JWT_SECRET', 'JWT_SECRET');
 
 const childBaseOptions = {
   algorithm: 'HS256',
@@ -71,10 +74,11 @@ export const signActivationToken = (user) => jwt.sign(
 
 export const verifyActivationToken = (token) => verifyChildToken(token, getChildAccessSecret(), 'activation');
 
-export const verifyParentAccessToken = (token) => jwt.verify(token, getParentAccessSecret(), {
-  algorithms: ['HS256'],
-});
-
-export const verifyParentRefreshToken = (token) => jwt.verify(token, getChildRefreshSecret(), {
-  algorithms: ['HS256'],
-});
+export const verifyParentAccessToken = (token) => {
+  const decoded = jwt.verify(token, getParentAccessSecret(), { algorithms: ['HS256'] });
+  const audiences = Array.isArray(decoded.aud) ? decoded.aud : [decoded.aud];
+  if (decoded.iss === CHILD_ACCESS_ISSUER && audiences.includes(CHILD_ACCESS_AUDIENCE)) {
+    throw new Error('Child token cannot be used as a parent session');
+  }
+  return decoded;
+};

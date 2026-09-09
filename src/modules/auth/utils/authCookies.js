@@ -1,29 +1,24 @@
-export const ACCESS_TOKEN_COOKIE = 'access_token';
-export const REFRESH_TOKEN_COOKIE = 'refresh_token';
-
-export const LEGACY_AUTH_COOKIE_NAMES = [
-  'vn_access_token_dev',
-  'vn_refresh_token_dev',
-  'vn_sso_block_dev',
-  '__Host-vn_access_token',
-  '__Host-vn_refresh_token',
-  '__Host-vn_sso_block',
-];
+const COOKIE_NAMES = {
+  production: {
+    access: '__Host-vn_access_token',
+    refresh: '__Host-vn_refresh_token',
+    blocker: '__Host-vn_sso_block',
+  },
+  development: {
+    access: 'vn_access_token_dev',
+    refresh: 'vn_refresh_token_dev',
+    blocker: 'vn_sso_block_dev',
+  },
+};
 
 /**
  * Danh sách tên cookie chuẩn dùng cho toàn hệ thống
  */
-export const getAuthCookieNames = () => ({
-  access: ACCESS_TOKEN_COOKIE,
-  refresh: REFRESH_TOKEN_COOKIE,
-});
-
-export const clearLegacyCookies = (reply) => {
-  const options = getClearAuthCookieOptions();
-  LEGACY_AUTH_COOKIE_NAMES.forEach((name) => {
-    reply.clearCookie(name, options);
-  });
-};
+export const getAuthCookieNames = () => (
+  process.env.NODE_ENV?.trim() === 'production'
+    ? COOKIE_NAMES.production
+    : COOKIE_NAMES.development
+);
 
 const defaultMaxAge = {
   access: 86400,
@@ -38,14 +33,12 @@ const configuredMaxAge = (kind) => {
 
 export const getAuthCookieOptions = (kind, overrides = {}) => {
   const isProd = process.env.NODE_ENV?.trim() === 'production';
-  const cookieDomain = process.env.COOKIE_DOMAIN?.trim();
 
   const options = {
     httpOnly: true,
     secure: isProd,
     sameSite: isProd ? 'none' : 'lax',
     path: '/',
-    ...(cookieDomain ? { domain: cookieDomain } : {}),
   };
 
   if (kind === 'access' || kind === 'refresh') {
@@ -57,14 +50,12 @@ export const getAuthCookieOptions = (kind, overrides = {}) => {
 
 export const getClearAuthCookieOptions = (overrides = {}) => {
   const isProd = process.env.NODE_ENV?.trim() === 'production';
-  const cookieDomain = process.env.COOKIE_DOMAIN?.trim();
 
   return {
     httpOnly: true,
     secure: isProd,
     sameSite: isProd ? 'none' : 'lax',
     path: '/',
-    ...(cookieDomain ? { domain: cookieDomain } : {}),
     ...overrides,
   };
 };
@@ -92,14 +83,13 @@ const cookieDomainVariants = (domain) => {
  * parent SSO scope.
  */
 export const getAuthCookieClearTargets = () => {
-  const configuredOptions = getClearAuthCookieOptions();
-  const hostOnlyOptions = { ...configuredOptions };
-  delete hostOnlyOptions.domain;
+  const hostOnlyOptions = getClearAuthCookieOptions();
 
   const domainTargets = new Map();
-  if (configuredOptions.domain) {
-    cookieDomainVariants(configuredOptions.domain).forEach((domain) => {
-      domainTargets.set(domain, { ...configuredOptions, domain });
+  const configuredDomain = process.env.COOKIE_DOMAIN?.trim();
+  if (configuredDomain) {
+    cookieDomainVariants(configuredDomain).forEach((domain) => {
+      domainTargets.set(domain, { ...hostOnlyOptions, domain });
     });
   }
 
