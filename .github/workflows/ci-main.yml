@@ -62,6 +62,9 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run auth contract tests
+        run: npm run test:auth
+
   docker:
     name: Build & Push Docker Image
     needs: build-and-test
