@@ -12,10 +12,18 @@ import {
 } from '../utils/authCookies.js';
 import {
   bootstrapSso,
+  bootstrapSsoFromAuthorizationCode,
   createLogoutBlocker,
   inspectParentCookie,
 } from '../services/sso.service.js';
 import { resolveAuthenticatedUser } from '../middlewares/auth.middleware.js';
+
+export const ssoOnlyDisabled = async (_request, reply) => reply.status(410).send({
+  success: false,
+  authenticated: false,
+  code: 'SSO_ONLY',
+  message: 'Use the central SSO portal for authentication',
+});
 
 export const login = async (request, reply) => {
   try {
@@ -241,7 +249,27 @@ export const ssoBootstrap = async (request, reply) => {
 export const ssoLogin = async (request, reply) => {
   try {
     reply.clearCookie(getAuthCookieNames().blocker, getClearAuthCookieOptions());
-    return ssoResponse(reply, await bootstrapSso({ request, explicit: true }));
+    const body = request.body || {};
+    const codeVerifier = body.code_verifier || body.codeVerifier;
+    const redirectUri = body.redirect_uri || body.redirectUri;
+    const clientId = body.client_id || body.clientId;
+    if (!body.code || !codeVerifier || !redirectUri || !clientId) {
+      return reply.status(400).send({
+        success: false,
+        authenticated: false,
+        code: 'SSO_CODE_REQUIRED',
+        message: 'SSO authorization code, verifier, client and redirect URI are required',
+      });
+    }
+
+    const data = await bootstrapSsoFromAuthorizationCode({
+      code: body.code,
+      codeVerifier,
+      redirectUri,
+      clientId,
+      requestId: request.id,
+    });
+    return ssoResponse(reply, data);
   } catch (error) {
     return reply.status(error.statusCode || 500).send({ success: false, authenticated: false, code: error.code || 'SSO_FAILED', message: error.message });
   }
