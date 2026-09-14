@@ -1,8 +1,8 @@
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import prisma from '../../../config/prisma.js';
 import logger from '../../../utils/logger.js';
 import axios from 'axios';
+import { signChildAccessToken, signChildRefreshToken } from '../config/authTokens.js';
 
 /**
  * Tạo token JWT để duy trì phiên đăng nhập cho user
@@ -14,21 +14,7 @@ import axios from 'axios';
  * @throws {Error} Ném lỗi nếu chưa định nghĩa JWT_SECRET trong biến môi trường
  */
 const signToken = (user) => {
-  if (!process.env.JWT_SECRET) {
-    throw new Error('Missing JWT_SECRET in environment variables');
-  }
-
-  return jwt.sign(
-    {
-      user_id: user.user_id,
-      email: user.email,
-      role: user.role
-    },
-    process.env.JWT_SECRET,
-    {
-      expiresIn: process.env.JWT_EXPIRES_IN || '1d'
-    }
-  );
+  return signChildAccessToken(user);
 };
 
 /**
@@ -56,10 +42,10 @@ export const verifyGoogleIdToken = async (idToken) => {
 };
 
 /**
- * Thực hiện đăng nhập hoặc đăng ký t� i khoản tự động khi xác thực bằng Google ID Token
+ * Thực hiện đăng nhập hoặc đăng ký t� i khoản tự động khi xác thực bằng Google ID Token
  * @param {string} idToken - Chuỗi Google ID Token nhận từ phía client
- * @returns {Promise<Object>} Trả về đối tượng chứa JWT access token v�  thông tin chi tiết người dùng
- * @throws {Error} Ném lỗi 403 nếu t� i khoản bị khóa (BANNED) hoặc lỗi validation khác
+ * @returns {Promise<Object>} Trả về đối tượng chứa JWT access token v�  thông tin chi tiết người dùng
+ * @throws {Error} Ném lỗi 403 nếu t� i khoản bị khóa (BANNED) hoặc lỗi validation khác
  */
 export const loginOrCreateWithGoogle = async (idToken) => {
   if (!idToken || !idToken.trim()) {
@@ -83,14 +69,14 @@ export const loginOrCreateWithGoogle = async (idToken) => {
   });
 
   if (user) {
-    // Nếu t� i khoản bị khóa
+    // Nếu t� i khoản bị khóa
     if (user.status === 'BANNED') {
-      const error = new Error('T� i khoản đã bị khóa');
+      const error = new Error('T� i khoản đã bị khóa');
       error.statusCode = 403;
       throw error;
     }
 
-    // Nếu trạng thái l�  INACTIVE hoặc auth_provider chưa phải GOOGLE, cập nhật lại
+    // Nếu trạng thái l�  INACTIVE hoặc auth_provider chưa phải GOOGLE, cập nhật lại
     if (user.status === 'INACTIVE' || user.type !== 'GOOGLE') {
       user = await prisma.user.update({
         where: { user_id: user.user_id },
@@ -101,7 +87,7 @@ export const loginOrCreateWithGoogle = async (idToken) => {
       });
     }
   } else {
-    // Đăng ký mới t� i khoản bằng Google
+    // Đăng ký mới t� i khoản bằng Google
     user = await prisma.user.create({
       data: {
         user_id: crypto.randomUUID(),
@@ -117,9 +103,11 @@ export const loginOrCreateWithGoogle = async (idToken) => {
   }
 
   const token = signToken(user);
+  const refreshToken = signChildRefreshToken(user);
 
   return {
     token,
+    refreshToken,
     user: {
       user_id: user.user_id,
       email: user.email,
@@ -129,19 +117,19 @@ export const loginOrCreateWithGoogle = async (idToken) => {
 };
 
 /**
- * H� m đổi Authorization Code lấy id_token từ Google
+ * H� m đổi Authorization Code lấy id_token từ Google
  * @param {string} code - Mã code nhận từ useGoogleLogin (chuỗi 4/0A...)
- * @returns {Promise<string|null>} - Trả về chuỗi id_token (JWT) nếu th� nh công
+ * @returns {Promise<string|null>} - Trả về chuỗi id_token (JWT) nếu th� nh công
  */
 export const getTokenId = async (code) => {
   // 1. Cấu hình các thông số cần thiết
   const tokenUrl = process.env.TOKEN_URL;
-  
+
   const payload = {
     code: code,
-    client_id: process.env.CLIENT_ID, 
-    client_secret: process.env.CLIENT_SECRET, 
-    redirect_uri: process.env.FRONTEND_URL,                    
+    client_id: process.env.CLIENT_ID,
+    client_secret: process.env.CLIENT_SECRET,
+    redirect_uri: process.env.FRONTEND_URL,
     grant_type: 'authorization_code',
   };
 
@@ -153,20 +141,18 @@ export const getTokenId = async (code) => {
       },
     });
 
-    // 3. Google trả về data th� nh công, lấy ra id_token
+    // 3. Google trả về data th� nh công, lấy ra id_token
     if (response.data && response.data.id_token) {
-      console.log('Lấy id_token th� nh công!');
-      return response.data.id_token; // Đây l�  chuỗi JWT bạn cần đem về Backend
+      console.log('Lấy id_token th� nh công!');
+      return response.data.id_token; // Đây l�  chuỗi JWT bạn cần đem về Backend
     }
-    
+
     return null;
   } catch (error) {
     logger.error(
-      'Lỗi khi đổi code lấy id_token:', 
+      'Lỗi khi đổi code lấy id_token:',
       error.response?.data || error.message
     );
     throw error;
   }
-};
-
-
+};

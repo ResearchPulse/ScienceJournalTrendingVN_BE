@@ -7,6 +7,7 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build-and-test:
@@ -61,10 +62,13 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Run auth contract tests
+        run: npm run test:auth
+
   docker:
     name: Build & Push Docker Image
     needs: build-and-test
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
     permissions:
@@ -97,18 +101,80 @@ jobs:
   deploy:
     name: Deploy to VPS
     needs: docker
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      packages: read
+
     steps:
-      - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1.2.2
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Copy docker-compose.yml to VPS
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          source: "docker-compose.yml"
+          target: "~/apps/researchpulse-vn-be"
+
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.2.2
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: GHCR_USERNAME,GHCR_TOKEN
           script: |
+            set -eu
+            mkdir -p ~/apps/researchpulse-vn-be
             cd ~/apps/researchpulse-vn-be
-            docker-compose pull
-            docker-compose up -d --force-recreate
+
+            deploy_docker_config="$(mktemp -d)"
+            export DOCKER_CONFIG="$deploy_docker_config"
+            trap 'rm -rf "$deploy_docker_config"' EXIT
+            printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
+
+            export BACKEND_IMAGE=ghcr.io/researchpulse/scientificjournalsystem-vietnam-be:${{ github.sha }}
+            docker-compose config
+            docker-compose pull vietnam-backend
+            docker-compose up -d --force-recreate --no-deps vietnam-backend
+            docker-compose ps vietnam-backend
+
             docker image prune -f
+
+      - name: Verify production logout clears shared SSO cookies
+        shell: bash
+        run: |
+          set -euo pipefail
+          headers="$(mktemp)"
+          trap 'rm -f "$headers"' EXIT
+
+          for attempt in {1..12}; do
+            if curl --fail --silent --show-error \
+              --dump-header "$headers" \
+              --output /dev/null \
+              --request POST \
+              --header "Origin: https://vn.hyperdatalab.org" \
+              --header "Content-Type: application/json" \
+              --data '{}' \
+              https://vietnam-api.hyperdatalab.org/api/v1/auth/logout; then
+              if grep -Eiq '^set-cookie: access_token=.*domain=\.?hyperdatalab\.org' "$headers" \
+                && grep -Eiq '^set-cookie: refresh_token=.*domain=\.?hyperdatalab\.org' "$headers"; then
+                echo "Production logout clears both shared SSO cookies."
+                exit 0
+              fi
+            fi
+
+            sleep 5
+          done
+
+          echo "Production logout did not clear the shared SSO cookie domain."
+          cat "$headers"
+          exit 1

@@ -1,0 +1,249 @@
+import { describe, test, mock } from 'node:test';
+import assert from 'node:assert/strict';
+import Fastify from 'fastify';
+import cookie from '@fastify/cookie';
+import crypto from 'node:crypto';
+import jwt from 'jsonwebtoken';
+
+process.env.NODE_ENV = 'test';
+process.env.PARENT_JWT_SECRET = 'parent-secret';
+process.env.VN_JWT_SECRET = 'child-secret';
+process.env.VN_JWT_REFRESH_SECRET = 'refresh-secret';
+process.env.VN_SSO_BLOCK_SECRET = 'block-secret';
+
+const localUser = { user_id: 'child-user-1', email: 'user@example.com', role: 'STUDENT', status: 'ACTIVE', type: null };
+mock.module('../../../modules/auth/repositories/sso.repository.js', {
+  namedExports: {
+    normalizeEmail: (email) => email.trim().toLowerCase(),
+    findUsersByNormalizedEmail: async () => [localUser],
+    createJitUser: async () => localUser,
+  },
+});
+
+const { checkAuth, logout, ssoBootstrap, ssoLogin } = await import('../../../modules/auth/controllers/auth.controller.js');
+const { authUserRepository } = await import('../../../modules/auth/middlewares/auth.middleware.js');
+const { getAuthCookieNames } = await import('../../../modules/auth/utils/authCookies.js');
+
+const readCookieValue = (response, name, predicate = () => true) => {
+  const serialized = [].concat(response.headers['set-cookie'] || [])
+    .find((value) => value.startsWith(`${name}=`) && predicate(value));
+  return serialized?.split(';', 1)[0].slice(name.length + 1) || null;
+};
+
+const buildApp = async () => {
+  const app = Fastify();
+  await app.register(cookie);
+  app.get('/auth/check-auth', checkAuth);
+  app.post('/auth/sso/bootstrap', ssoBootstrap);
+  app.post('/auth/sso/login', ssoLogin);
+  app.post('/auth/logout', logout);
+  return app;
+};
+
+describe('parent-to-child SSO exchange', () => {
+  test('OIDC authorization code exchange creates a child session from central userinfo', async () => {
+    const originalFetch = global.fetch;
+    const originalCentralUrl = process.env.CENTRAL_SSO_API_URL;
+    const originalIssuerUrl = process.env.CENTRAL_SSO_ISSUER_URL;
+    const originalClientId = process.env.SSO_CLIENT_ID;
+    const originalRedirectUri = process.env.SSO_REDIRECT_URI;
+    const calls = [];
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const publicJwk = publicKey.export({ format: 'jwk' });
+    const centralAccessToken = jwt.sign(
+      {
+        sub: 'central-user-1',
+        iss: 'http://central-sso.test',
+        aud: 'demo-client-app',
+        scope: 'openid email profile',
+      },
+      privateKey,
+      { algorithm: 'RS256', keyid: 'central-test-key', expiresIn: '1h' },
+    );
+
+    process.env.CENTRAL_SSO_API_URL = 'http://central-sso.test';
+    process.env.CENTRAL_SSO_ISSUER_URL = 'http://central-sso.test';
+    process.env.SSO_CLIENT_ID = 'demo-client-app';
+    process.env.SSO_REDIRECT_URI = 'http://localhost:5173/auth/callback';
+    global.fetch = async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url.endsWith('/api/v1/oidc/token')) {
+        return new Response(JSON.stringify({ access_token: centralAccessToken }), { status: 200 });
+      }
+      if (url.endsWith('/.well-known/jwks.json')) {
+        return new Response(JSON.stringify({
+          keys: [{ ...publicJwk, kid: 'central-test-key', alg: 'RS256', use: 'sig' }],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ sub: 'central-user-1', email: 'USER@example.com' }), { status: 200 });
+    };
+
+    const app = await buildApp();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/auth/sso/login',
+        payload: {
+          code: 'central-code',
+          code_verifier: 'pkce-verifier',
+          client_id: 'demo-client-app',
+          redirect_uri: 'http://localhost:5173/auth/callback',
+        },
+      });
+
+      assert.equal(response.statusCode, 200);
+      assert.deepEqual(response.json().data, { user_id: 'child-user-1', email: 'user@example.com', role: 'STUDENT' });
+      assert.equal(calls.length, 3);
+      assert.ok(calls[0].options.headers['x-request-id']);
+      assert.equal(calls[1].options.headers['x-request-id'], calls[0].options.headers['x-request-id']);
+      assert.deepEqual(JSON.parse(calls[0].options.body), {
+        grant_type: 'authorization_code',
+        client_id: 'demo-client-app',
+        code: 'central-code',
+        redirect_uri: 'http://localhost:5173/auth/callback',
+        code_verifier: 'pkce-verifier',
+      });
+
+      const childToken = readCookieValue(response, getAuthCookieNames().access);
+      assert.equal(jwt.decode(childToken).auth_source, 'central_oidc');
+    } finally {
+      await app.close();
+      global.fetch = originalFetch;
+      if (originalCentralUrl === undefined) delete process.env.CENTRAL_SSO_API_URL;
+      else process.env.CENTRAL_SSO_API_URL = originalCentralUrl;
+      if (originalIssuerUrl === undefined) delete process.env.CENTRAL_SSO_ISSUER_URL;
+      else process.env.CENTRAL_SSO_ISSUER_URL = originalIssuerUrl;
+      if (originalClientId === undefined) delete process.env.SSO_CLIENT_ID;
+      else process.env.SSO_CLIENT_ID = originalClientId;
+      if (originalRedirectUri === undefined) delete process.env.SSO_REDIRECT_URI;
+      else process.env.SSO_REDIRECT_URI = originalRedirectUri;
+    }
+  });
+
+  test('code-only SSO login rejects legacy cookie bootstrap requests', async () => {
+    const app = await buildApp();
+    const parentToken = jwt.sign({ email: 'user@example.com' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/sso/login',
+      cookies: { access_token: parentToken },
+      payload: {},
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.json().code, 'SSO_CODE_REQUIRED');
+    await app.close();
+  });
+
+  test('bootstrap maps verified parent email to local user and sets an isolated child cookie', async () => {
+    const app = await buildApp();
+    const parentToken = jwt.sign({ email: 'USER@example.com', role: 'ADMINISTRATOR' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({ method: 'POST', url: '/auth/sso/bootstrap', cookies: { access_token: parentToken } });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json().data, { user_id: 'child-user-1', email: 'user@example.com', role: 'STUDENT' });
+    assert.equal(response.json().access_token, undefined);
+    assert.match([].concat(response.headers['set-cookie']).join(';'), new RegExp(`${getAuthCookieNames().access}=`));
+    await app.close();
+  });
+
+  test('read-only check-auth rejects a parent token until it is exchanged', async () => {
+    const app = await buildApp();
+    const parentToken = jwt.sign({ email: 'user@example.com' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({ method: 'GET', url: '/auth/check-auth', cookies: { access_token: parentToken } });
+    assert.equal(response.statusCode, 401);
+    assert.equal(response.json().authenticated, false);
+    await app.close();
+  });
+
+  test('bootstrap rejects a token signed with the child secret', async () => {
+    const app = await buildApp();
+    const forged = jwt.sign({ email: 'user@example.com', role: 'ADMINISTRATOR' }, process.env.VN_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({ method: 'POST', url: '/auth/sso/bootstrap', cookies: { access_token: forged } });
+    assert.equal(response.statusCode, 401);
+    assert.equal(response.json().authenticated, false);
+    await app.close();
+  });
+
+  test('bootstrap keeps compatibility with a parent token that uses username as its email claim', async () => {
+    const app = await buildApp();
+    const parentToken = jwt.sign({ username: 'USER@example.com', role: 'STUDENT' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({ method: 'POST', url: '/auth/sso/bootstrap', cookies: { access_token: parentToken } });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().data.email, 'user@example.com');
+    await app.close();
+  });
+
+  test('development bootstrap accepts a parent bearer token and issues a host-only child cookie', async () => {
+    const app = await buildApp();
+    const parentToken = jwt.sign({ email: 'user@example.com', role: 'STUDENT' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
+    const response = await app.inject({
+      method: 'POST',
+      url: '/auth/sso/bootstrap',
+      headers: { authorization: `Bearer ${parentToken}` },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const childCookie = [].concat(response.headers['set-cookie'] || [])
+      .find((value) => value.startsWith(`${getAuthCookieNames().access}=`));
+    assert.ok(childCookie);
+    assert.doesNotMatch(childCookie, /;\s*domain=/i);
+    await app.close();
+  });
+
+  test('child logout remains logged out after reload even if the same parent cookie survives', async () => {
+    const app = await buildApp();
+    const names = getAuthCookieNames();
+    const parentToken = jwt.sign({ email: 'user@example.com', role: 'STUDENT' }, process.env.PARENT_JWT_SECRET, { expiresIn: '1h' });
+    authUserRepository.findById = async () => localUser;
+
+    const bootstrap = await app.inject({
+      method: 'POST',
+      url: '/auth/sso/bootstrap',
+      cookies: { access_token: parentToken },
+    });
+    const childToken = readCookieValue(bootstrap, names.access);
+    assert.ok(childToken);
+
+    const authenticated = await app.inject({
+      method: 'GET',
+      url: '/auth/check-auth',
+      cookies: { [names.access]: childToken },
+    });
+    assert.equal(authenticated.statusCode, 200);
+
+    const loggedOut = await app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      cookies: { access_token: parentToken, [names.access]: childToken },
+    });
+    assert.equal(loggedOut.statusCode, 200);
+    const blocker = readCookieValue(
+      loggedOut,
+      names.blocker,
+      (value) => !/expires=thu, 01 jan 1970/i.test(value),
+    );
+    assert.ok(blocker);
+
+    const afterReload = await app.inject({
+      method: 'GET',
+      url: '/auth/check-auth',
+      cookies: {
+        [names.access]: childToken,
+        [names.blocker]: blocker,
+      },
+    });
+    assert.equal(afterReload.statusCode, 401);
+    assert.equal(afterReload.json().code, 'SSO_BLOCKED');
+
+    const repeatedBootstrap = await app.inject({
+      method: 'POST',
+      url: '/auth/sso/bootstrap',
+      cookies: { access_token: parentToken, [names.blocker]: blocker },
+    });
+    assert.equal(repeatedBootstrap.statusCode, 409);
+    assert.equal(repeatedBootstrap.json().code, 'SSO_BLOCKED');
+    await app.close();
+  });
+});

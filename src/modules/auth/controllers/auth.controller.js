@@ -1,23 +1,29 @@
 import { loginWithEmailPassword, signRefreshToken, signToken } from '../services/login.service.js';
 import { registerWithEmailPassword, activateAccount, resendActivationEmail } from '../services/register.service.js';
 import logger from '../../../utils/logger.js';
-import jwt from 'jsonwebtoken';
 import { createLog } from '../../system/services/log.service.js';
 import { isValidEmail } from '../../../utils/validation.js';
+import { verifyChildRefreshToken } from '../config/authTokens.js';
+import {
+  getAuthCookieNames,
+  getAuthCookieOptions,
+  getClearAuthCookieOptions,
+  getAuthCookieClearTargets,
+} from '../utils/authCookies.js';
+import {
+  bootstrapSso,
+  bootstrapSsoFromAuthorizationCode,
+  createLogoutBlocker,
+  inspectParentCookie,
+} from '../services/sso.service.js';
+import { resolveAuthenticatedUser } from '../middlewares/auth.middleware.js';
 
-export const getCookieOptions = (extra = {}) => {
-  const isProd = process.env.NODE_ENV?.trim() === 'production';
-  const cookieDomain = process.env.COOKIE_DOMAIN?.trim();
-
-  return {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? 'none' : 'lax',
-    path: '/',
-    ...(cookieDomain ? { domain: cookieDomain } : {}),
-    ...extra,
-  };
-};
+export const ssoOnlyDisabled = async (_request, reply) => reply.status(410).send({
+  success: false,
+  authenticated: false,
+  code: 'SSO_ONLY',
+  message: 'Use the central SSO portal for authentication',
+});
 
 export const login = async (request, reply) => {
   try {
@@ -35,17 +41,14 @@ export const login = async (request, reply) => {
 
     const data = await loginWithEmailPassword({ email, password });
 
-    reply.setCookie('access_token', data.token, getCookieOptions({
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE),
-    }));
+    const cookieNames = getAuthCookieNames();
+    reply.setCookie(cookieNames.access, data.token, getAuthCookieOptions('access'));
 
     if (remember === true) {
       const refreshToken = signRefreshToken(data.user);
-      reply.setCookie('refresh_token', refreshToken, getCookieOptions({
-        maxAge: Number(process.env.COOKIE_REFRESH_MAX_AGE),
-      }));
+      reply.setCookie(cookieNames.refresh, refreshToken, getAuthCookieOptions('refresh'));
     } else {
-      reply.clearCookie('refresh_token', getCookieOptions());
+      reply.clearCookie(cookieNames.refresh, getClearAuthCookieOptions());
     }
 
     createLog({
@@ -79,7 +82,8 @@ export const login = async (request, reply) => {
 
 export const refreshToken = async (request, reply) => {
   try {
-    const refreshTokenValue = request.cookies.refresh_token;
+    const cookieNames = getAuthCookieNames();
+    const refreshTokenValue = request.cookies?.[cookieNames.refresh];
     
     if (!refreshTokenValue) {
       return reply.status(401).send({
@@ -91,9 +95,7 @@ export const refreshToken = async (request, reply) => {
 
     let decoded;
     try {
-      decoded = jwt.verify(refreshTokenValue, process.env.JWT_REFRESH_SECRET, {
-        ignoreExpiration: true,
-      });
+      decoded = verifyChildRefreshToken(refreshTokenValue);
     } catch (jwtError) {
       return reply.status(401).send({
         success: false,
@@ -102,15 +104,10 @@ export const refreshToken = async (request, reply) => {
       });
     }
 
-    const newAccessToken = signToken({
-      user_id: decoded.user_id,
-      email: decoded.email,
-      role: decoded.role,
-    });
+    const user = { user_id: decoded.user_id, email: decoded.email, role: decoded.role };
+    const newAccessToken = signToken(user);
 
-    reply.setCookie("access_token", newAccessToken, getCookieOptions({
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE),
-    }));
+    reply.setCookie(cookieNames.access, newAccessToken, getAuthCookieOptions('access'));
 
     return reply.status(200).send({
       success: true,
@@ -131,10 +128,8 @@ export const refreshToken = async (request, reply) => {
 
 export const checkAuth = async (request, reply) => {
   try {
-    let accessToken = request.cookies?.access_token;
-    if (!accessToken && request.headers.authorization?.startsWith('Bearer ')) {
-      accessToken = request.headers.authorization.split(' ')[1];
-    }
+    const accessToken = request.headers.authorization?.replace(/^Bearer\s+/i, '')
+      || request.cookies?.[getAuthCookieNames().access];
 
     if (!accessToken) {
       return reply.status(401).send({
@@ -145,20 +140,30 @@ export const checkAuth = async (request, reply) => {
       });
     }
 
-    const decoded = jwt.verify(accessToken, process.env.JWT_SECRET);
-
+    const user = await resolveAuthenticatedUser(request);
     return reply.status(200).send({
       success: true,
       authenticated: true,
-      user: decoded,
-      access_token: accessToken,
+      data: {
+        user_id: user.user_id,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        ...(user.auth_source ? { auth_source: user.auth_source } : {}),
+      },
+      user: {
+        user_id: user.user_id,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+      },
     });
 
   } catch (error) {
-    return reply.status(401).send({
+    return reply.status(error.statusCode || 401).send({
       success: false,
       authenticated: false,
-      code: "ACCESS_TOKEN_INVALID",
+      code: error.code || "ACCESS_TOKEN_INVALID",
       message: "Access token khÃ´ng há»£p lá»‡ hoáº·c Ä‘Ã£ háº¿t háº¡n",
     });
   }
@@ -166,13 +171,38 @@ export const checkAuth = async (request, reply) => {
 
 export const logout = async (request, reply) => {
   try {
-    reply.clearCookie('access_token', getCookieOptions());
-    reply.clearCookie('refresh_token', getCookieOptions());
+    const cookieNames = getAuthCookieNames();
+    const parentToken = inspectParentCookie(request);
+
+    const authCookieNames = new Set([
+      cookieNames.access,
+      cookieNames.refresh,
+      cookieNames.blocker,
+      'access_token',
+      'refresh_token',
+    ]);
+    const clearTargets = getAuthCookieClearTargets();
+    for (const name of authCookieNames) {
+      for (const options of clearTargets) {
+        reply.clearCookie(name, options);
+      }
+    }
+
+    if (parentToken) {
+      try {
+        const blocker = createLogoutBlocker(parentToken);
+        reply.setCookie(cookieNames.blocker, blocker.value, getAuthCookieOptions('access', {
+          maxAge: Math.max(1, blocker.exp - Math.floor(Date.now() / 1000)),
+        }));
+      } catch {
+        // An invalid parent cookie must not prevent logout.
+      }
+    }
 
     return reply.status(200).send({
       success: true,
       code: "LOGOUT_SUCCESS",
-      message: "ÄÄƒng xuáº¥t thÃ� nh cÃ´ng",
+      message: "Đăng xuất thành công",
     });
   } catch (error) {
     logger.error("Lá»—i há»‡ thá»‘ng trong controller Ä‘Äƒng xuáº¥t:", error);
@@ -181,6 +211,67 @@ export const logout = async (request, reply) => {
       code: "LOGOUT_FAILED",
       message: "CÃ³ lá»—i xáº£y ra á»Ÿ server",
     });
+  }
+};
+
+const ssoResponse = (reply, data) => {
+  const names = getAuthCookieNames();
+  reply.setCookie(names.access, data.token, getAuthCookieOptions('access', {
+    maxAge: data.sessionExpiresIn,
+  }));
+  return reply.status(200).send({
+    success: true,
+    authenticated: true,
+    code: 'SSO_BOOTSTRAP_SUCCESS',
+    data: {
+      user_id: data.user.user_id,
+      email: data.user.email,
+      role: data.user.role,
+    },
+  });
+};
+
+export const ssoBootstrap = async (request, reply) => {
+  try {
+    return ssoResponse(reply, await bootstrapSso({ request }));
+  } catch (error) {
+    if (error.code === 'LEGACY_COOKIE_CLEARED') {
+      for (const name of ['access_token', 'refresh_token']) {
+        for (const options of getAuthCookieClearTargets()) {
+          reply.clearCookie(name, options);
+        }
+      }
+    }
+    return reply.status(error.statusCode || 500).send({ success: false, authenticated: false, code: error.code || 'SSO_FAILED', message: error.message });
+  }
+};
+
+export const ssoLogin = async (request, reply) => {
+  try {
+    reply.clearCookie(getAuthCookieNames().blocker, getClearAuthCookieOptions());
+    const body = request.body || {};
+    const codeVerifier = body.code_verifier || body.codeVerifier;
+    const redirectUri = body.redirect_uri || body.redirectUri;
+    const clientId = body.client_id || body.clientId;
+    if (!body.code || !codeVerifier || !redirectUri || !clientId) {
+      return reply.status(400).send({
+        success: false,
+        authenticated: false,
+        code: 'SSO_CODE_REQUIRED',
+        message: 'SSO authorization code, verifier, client and redirect URI are required',
+      });
+    }
+
+    const data = await bootstrapSsoFromAuthorizationCode({
+      code: body.code,
+      codeVerifier,
+      redirectUri,
+      clientId,
+      requestId: request.id,
+    });
+    return ssoResponse(reply, data);
+  } catch (error) {
+    return reply.status(error.statusCode || 500).send({ success: false, authenticated: false, code: error.code || 'SSO_FAILED', message: error.message });
   }
 };
 
@@ -312,13 +403,9 @@ export const googleLogin = async (request, reply) => {
 
     const data = await loginOrCreateWithGoogle(googleToken);
 
-    reply.setCookie('access_token', data.token, getCookieOptions({
-      maxAge: Number(process.env.COOKIE_ACCESS_MAX_AGE) || 86400,
-    }));
-
-    reply.setCookie('refresh_token', data.refreshToken, getCookieOptions({
-      maxAge: Number(process.env.COOKIE_REFRESH_MAX_AGE) || 604800,
-    }));
+    const cookieNames = getAuthCookieNames();
+    reply.setCookie(cookieNames.access, data.token, getAuthCookieOptions('access'));
+    reply.setCookie(cookieNames.refresh, data.refreshToken, getAuthCookieOptions('refresh'));
 
     await createLog(data.user.user_id, 'LOGIN', 'Đăng nhập th� nh công bằng Google', request.ip);
 

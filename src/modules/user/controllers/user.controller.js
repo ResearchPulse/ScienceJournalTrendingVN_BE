@@ -13,7 +13,7 @@ export const deleteMe = async (request, reply) => {
     const userId = request.user.user_id;
     const deletedUser = await userService.deleteUserById(userId);
 
-    logger.info(`[User]: Xóa t� i khoản th� nh công cho email: ${deletedUser.email} (ID: ${userId})`);
+    logger.info(`[User]: Xóa t� i khoản th� nh công cho email: ${deletedUser.email} (ID: ${userId})`);
 
     createLog({
       userId: userId,
@@ -21,18 +21,18 @@ export const deleteMe = async (request, reply) => {
       action: 'DELETE',
       entityTable: 'user',
       entityId: userId,
-      message: `Người dùng ${deletedUser.email} tự xóa t� i khoản của mình.`,
+      message: `Người dùng ${deletedUser.email} tự xóa t� i khoản của mình.`,
       metadata: { ip: request.ip }
     });
 
     return reply.status(200).send({
       success: true,
-      message: `Xóa t� i khoản ${deletedUser.email} th� nh công!`,
+      message: `Xóa t� i khoản ${deletedUser.email} th� nh công!`,
       data: { user_id: deletedUser.user_id },
     });
   } catch (error) {
     if (!error.statusCode || error.statusCode === 500) {
-      logger.error("Lỗi hệ thống khi tự xóa t� i khoản:", error);
+      logger.error("Lỗi hệ thống khi tự xóa t� i khoản:", error);
     }
     return reply.status(error.statusCode || 500).send({
       success: false,
@@ -51,7 +51,7 @@ export const updateMe = async (request, reply) => {
       first_name, last_name, date_of_birth, gender, url_image,
     });
 
-    logger.info(`[User]: Cập nhật thông tin t� i khoản th� nh công cho email: ${updatedUser.email} (ID: ${userId})`);
+    logger.info(`[User]: Cập nhật thông tin t� i khoản th� nh công cho email: ${updatedUser.email} (ID: ${userId})`);
 
     createLog({
       userId: userId,
@@ -66,7 +66,7 @@ export const updateMe = async (request, reply) => {
     return reply.status(200).send({
       success: true,
       code: "UPDATE_PROFILE_SUCCESS",
-      message: "Cập nhật thông tin cá nhân th� nh công!",
+      message: "Cập nhật thông tin cá nhân th� nh công!",
       data: updatedUser,
     });
   } catch (error) {
@@ -84,12 +84,28 @@ export const updateMe = async (request, reply) => {
 export const getMe = async (request, reply) => {
   try {
     const userId = request.user.user_id;
+
+    if (request.user?.auth_source === 'parent_sso') {
+      return reply.status(200).send({
+        success: true,
+        code: 'SUCCESS_GET_USER',
+        message: 'Lấy thông tin người dùng thành công!',
+        data: {
+          user_id: request.user.user_id,
+          email: request.user.email,
+          role: request.user.role || 'USER',
+          status: 'ACTIVE',
+          auth_source: 'parent_sso',
+        },
+      });
+    }
+
     const user = await userService.getUserById(userId);
 
     return reply.status(200).send({
       success: true,
       code: "SUCCESS_GET_USER",
-      message: "Lấy thông tin người dùng th� nh công!",
+      message: "Lấy thông tin người dùng th� nh công!",
       data: user,
     });
   } catch (error) {
@@ -124,14 +140,14 @@ export const updateUserById = async (request, reply) => {
       if (body[field] !== undefined) updateData[field] = body[field];
     }
     if (Object.keys(updateData).length === 0) {
-      return reply.status(400).send({ success: false, code: "INVALID_FIELDS", message: "Không có trường hợp lệ n� o để cập nhật" });
+      return reply.status(400).send({ success: false, code: "INVALID_FIELDS", message: "Không có trường hợp lệ n� o để cập nhật" });
     }
 
     if (updateData.date_of_birth && !isValidDate(updateData.date_of_birth)) {
-      return reply.status(400).send({ success: false, code: "INVALID_DATE", message: "Ng� y sinh không hợp lệ" });
+      return reply.status(400).send({ success: false, code: "INVALID_DATE", message: "Ng� y sinh không hợp lệ" });
     }
     if (updateData.gender !== undefined && typeof updateData.gender !== 'boolean') {
-      return reply.status(400).send({ success: false, code: "INVALID_GENDER", message: "Giới tính phải l�  kiểu boolean" });
+      return reply.status(400).send({ success: false, code: "INVALID_GENDER", message: "Giới tính phải l�  kiểu boolean" });
     }
 
     const updatedUser = await userService.updateUserProfile(id, updateData);
@@ -149,7 +165,7 @@ export const updateUserById = async (request, reply) => {
     return reply.status(200).send({
       success: true,
       code: "UPDATE_PROFILE_SUCCESS",
-      message: "Cập nhật thông tin cá nhân th� nh công",
+      message: "Cập nhật thông tin cá nhân th� nh công",
       data: updatedUser,
     });
   } catch (error) {
@@ -173,13 +189,13 @@ export const adminUpdateUser = async (request, reply) => {
     for (const field of allowedFields) {
       if (body[field] !== undefined) updateData[field] = body[field];
     }
-    if (Object.keys(updateData).length === 0) return reply.status(400).send({ success: false, code: "INVALID_FIELDS", message: "Không có trường hợp lệ n� o để cập nhật" });
+    if (Object.keys(updateData).length === 0) return reply.status(400).send({ success: false, code: "INVALID_FIELDS", message: "Không có trường hợp lệ n� o để cập nhật" });
 
     if (updateData.status && !isValidStatus(updateData.status)) return reply.status(400).send({ success: false, code: "INVALID_STATUS", message: "Trạng thái không hợp lệ" });
     if (updateData.role && !isValidRole(updateData.role)) return reply.status(400).send({ success: false, code: "INVALID_ROLE", message: "Quyền không hợp lệ" });
     if (updateData.type && !isValidType(updateData.type)) return reply.status(400).send({ success: false, code: "INVALID_TYPE", message: "Phương thức đăng nhập không hợp lệ" });
-    if (updateData.date_of_birth && !isValidDate(updateData.date_of_birth)) return reply.status(400).send({ success: false, code: "INVALID_DATE", message: "Ng� y sinh không hợp lệ" });
-    if (updateData.gender !== undefined && typeof updateData.gender !== 'boolean') return reply.status(400).send({ success: false, code: "INVALID_GENDER", message: "Giới tính phải l�  kiểu boolean" });
+    if (updateData.date_of_birth && !isValidDate(updateData.date_of_birth)) return reply.status(400).send({ success: false, code: "INVALID_DATE", message: "Ng� y sinh không hợp lệ" });
+    if (updateData.gender !== undefined && typeof updateData.gender !== 'boolean') return reply.status(400).send({ success: false, code: "INVALID_GENDER", message: "Giới tính phải l�  kiểu boolean" });
     if (updateData.email && !isValidEmail(updateData.email)) return reply.status(400).send({ success: false, code: "INVALID_EMAIL", message: "Email không đúng định dạng" });
     if (updateData.password && updateData.password.length < 6) return reply.status(400).send({ success: false, code: "INVALID_PASSWORD", message: "Mật khẩu phải có ít nhất 6 ký tự" });
 
@@ -200,7 +216,7 @@ export const adminUpdateUser = async (request, reply) => {
     return reply.status(200).send({
       success: true,
       code: "ADMIN_UPDATE_USER_SUCCESS",
-      message: "Admin cập nhật thông tin người dùng th� nh công",
+      message: "Admin cập nhật thông tin người dùng th� nh công",
       data: updatedUser
     });
   } catch (error) {
@@ -229,7 +245,7 @@ export const getUsers = async (request, reply) => {
     return reply.status(200).send({
       success: true,
       code: "GET_USERS_SUCCESS",
-      message: "Lấy danh sách người dùng th� nh công",
+      message: "Lấy danh sách người dùng th� nh công",
       data: result.items,
       pagination: result.pagination
     });
@@ -242,7 +258,7 @@ export const getUsers = async (request, reply) => {
 export const getUserDetail = async (request, reply) => {
   try {
     const { id } = request.params;
-    if (!isValidUUID(id)) return reply.status(400).send({ success: false, code: "INVALID_USER_ID", message: "ID người dùng không hợp lệ (phải l�  định dạng UUID)" });
+    if (!isValidUUID(id)) return reply.status(400).send({ success: false, code: "INVALID_USER_ID", message: "ID người dùng không hợp lệ (phải l�  định dạng UUID)" });
 
     const user = await adminService.getUserDetailById(id);
     if (!user) return reply.status(404).send({ success: false, code: "USER_NOT_FOUND", message: "Không tìm thấy người dùng" });
@@ -258,7 +274,7 @@ export const getUserDetail = async (request, reply) => {
       metadata: { ip: request.ip }
     });
 
-    return reply.status(200).send({ success: true, code: "GET_USER_DETAIL_SUCCESS", message: "Lấy chi tiết người dùng th� nh công", data: user });
+    return reply.status(200).send({ success: true, code: "GET_USER_DETAIL_SUCCESS", message: "Lấy chi tiết người dùng th� nh công", data: user });
   } catch (error) {
     logger.error("Lỗi khi lấy chi tiết người dùng (User Controller):", error);
     return reply.status(500).send({ success: false, code: "INTERNAL_SERVER_ERROR", message: "Lỗi hệ thống khi lấy chi tiết người dùng" });
@@ -282,11 +298,11 @@ export const createUser = async (request, reply) => {
       source: 'ADMIN_PANEL',
       entityTable: 'user',
       entityId: newUser.user_id,
-      message: `Admin đã tạo t� i khoản mới: ${newUser.email} (Role: ${newUser.role})`,
+      message: `Admin đã tạo t� i khoản mới: ${newUser.email} (Role: ${newUser.role})`,
       metadata: { ip: request.ip }
     });
 
-    return reply.status(201).send({ success: true, code: "CREATE_USER_SUCCESS", message: "Tạo người dùng th� nh công", data: newUser });
+    return reply.status(201).send({ success: true, code: "CREATE_USER_SUCCESS", message: "Tạo người dùng th� nh công", data: newUser });
   } catch (error) {
     logger.error("Lỗi khi tạo người dùng (User Controller):", error);
     if (error.statusCode === 409) return reply.status(409).send({ success: false, code: "EMAIL_EXISTS", message: error.message });
@@ -304,7 +320,7 @@ export const getJournalRepositorySummary = async (request, reply) => {
       return reply.status(404).send({ success: false, message: `Không tìm thấy tạp chí với ID: ${journalId}`, errorCode: 'JOURNAL_NOT_FOUND' });
     }
     const summaryData = await journalService.getJournalRepositorySummary(journalId);
-    return reply.status(200).send({ success: true, message: 'Lấy dữ liệu tổng quan của kho lưu trữ th� nh công', data: summaryData });
+    return reply.status(200).send({ success: true, message: 'Lấy dữ liệu tổng quan của kho lưu trữ th� nh công', data: summaryData });
   } catch (error) {
     logger.error('[Admin Controller] Lỗi khi lấy repository summary:', error);
     return reply.status(500).send({ success: false, message: 'Lỗi hệ thống khi lấy dữ liệu tổng quan', errorCode: 'INTERNAL_ERROR' });
@@ -314,7 +330,7 @@ export const getJournalRepositorySummary = async (request, reply) => {
 export const summary = async (request, reply) => {
   try {
     const data = await adminService.summary();
-    return reply.status(200).send({ success: true, code: "GET_SUMMARY_SUCCESS", message: "Lấy số liệu thống kê tổng quan th� nh công", data });
+    return reply.status(200).send({ success: true, code: "GET_SUMMARY_SUCCESS", message: "Lấy số liệu thống kê tổng quan th� nh công", data });
   } catch (error) {
     logger.error("[Admin Controller] Lỗi get summary:", error);
     return reply.status(500).send({ success: false, message: "Lỗi hệ thống server" });
@@ -325,7 +341,7 @@ export const publicationTrends = async (request, reply) => {
   try {
     const { year, limit } = request.query;
     const data = await adminService.getPublicationTrends(year, limit);
-    return reply.status(200).send({ success: true, code: "GET_PUBLICATION_TRENDS_SUCCESS", message: "Lấy dữ liệu biểu đồ xu hướng xuất bản th� nh công", data });
+    return reply.status(200).send({ success: true, code: "GET_PUBLICATION_TRENDS_SUCCESS", message: "Lấy dữ liệu biểu đồ xu hướng xuất bản th� nh công", data });
   } catch (error) {
     logger.error("[Admin Controller] Lỗi get publication trends:", error);
     return reply.status(500).send({ success: false, message: "Lỗi hệ thống server" });
@@ -338,7 +354,7 @@ export const getVolumeIssueStatus = async (request, reply) => {
     const limit = parseInt(request.query.limit) || 10;
     const result = await adminService.getVolumeIssueStatus({ page, limit });
     return reply.status(200).send({
-      success: true, code: "GET_VOLUME_ISSUE_STATUS_SUCCESS", message: "Lấy danh sách Volume & Issue Status th� nh công",
+      success: true, code: "GET_VOLUME_ISSUE_STATUS_SUCCESS", message: "Lấy danh sách Volume & Issue Status th� nh công",
       data: result.items, pagination: result.pagination,
     });
   } catch (error) {
@@ -381,7 +397,7 @@ export const getRecentActivities = async (request, reply) => {
     const limit = parseInt(request.query.limit) || 10;
     const result = await logService.getLogs({ page, limit });
     return reply.status(200).send({
-      success: true, code: "GET_RECENT_ACTIVITIES_SUCCESS", message: "Lấy danh sách hoạt động gần đây th� nh công",
+      success: true, code: "GET_RECENT_ACTIVITIES_SUCCESS", message: "Lấy danh sách hoạt động gần đây th� nh công",
       data: result.logs, pagination: result.pagination,
     });
   } catch (error) {

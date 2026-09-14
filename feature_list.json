@@ -1,0 +1,42 @@
+[
+  {
+    "id": "phase-01-cookie-contract-and-tokens",
+    "title": "Cookie Contract & Token Verification Configuration",
+    "status": "passing",
+    "evidence": "Tests: 4 passed, 0 failed. Cookie names access_token & refresh_token verified.",
+    "priority": "P1",
+    "user_visible_behavior": "Cookie naming switched to standard access_token and refresh_token, supporting parent wildcard domain clear options and token signature verification.",
+    "verification_command": "node --test src/tests/unit/auth/authCookies.test.js",
+    "notes": "Covers stories: P1, P2"
+  },
+  {
+    "id": "phase-02-stateless-parent-verification",
+    "title": "Stateless Parent Token Verification in Auth Middleware",
+    "status": "passing",
+    "evidence": "Tests: 3 passed, 0 failed. Stateless parent verification and token contract confirmed.",
+    "priority": "P1",
+    "user_visible_behavior": "User authenticated on parent domain accesses child subdomain services without requiring a local database user record.",
+    "verification_command": "node --test src/tests/unit/auth/authTokens.test.js",
+    "notes": "Covers stories: P1"
+  },
+  {
+    "id": "phase-03-child-logout-and-local-login",
+    "title": "Child Logout & Local Login Isolation",
+    "status": "passing",
+    "evidence": "Tests: 1 passed, 0 failed. Logout clears both local and parent wildcard cookies.",
+    "priority": "P1",
+    "user_visible_behavior": "Logging out on child clears parent domain cookies; logging in locally on child only issues subdomain-scoped cookies without affecting parent session.",
+    "verification_command": "npm test src/tests/integration/auth/logoutCookieClear.test.js",
+    "notes": "Covers stories: P1, P2"
+  },
+  {
+    "id": "phase-04-e2e-and-regression-verification",
+    "title": "E2E and Regression Verification",
+    "status": "passing",
+    "evidence": "Tests: 11 passed across unit and integration auth suites. Stateless verification, cookie lifecycle, and regression verified.",
+    "priority": "P1",
+    "user_visible_behavior": "End-to-end verified cross-domain SSO verification, cookie clearing, and local login flows with full test suite green.",
+    "verification_command": "npm test",
+    "notes": "Covers stories: P1, P2, P3"
+  }
+]
