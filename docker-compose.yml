@@ -12,6 +12,13 @@ services:
     env_file:
       - .env
 
+    # Inside Docker, localhost points to this container. The central SSO API
+    # is reachable through the shared network; override when the service name
+    # differs between environments.
+    environment:
+      CENTRAL_SSO_API_URL: ${CENTRAL_SSO_API_URL_DOCKER:-http://sso-api:3001}
+      CENTRAL_SSO_ISSUER_URL: ${CENTRAL_SSO_ISSUER_URL:-${CENTRAL_SSO_API_URL:-http://localhost:3001}}
+
     networks:
       - researchpulse_network
 
