@@ -20,11 +20,15 @@ const configurationValue = (name, developmentFallback) => {
 };
 
 const getCentralSsoApiUrl = () => (
-  configurationValue('CENTRAL_SSO_API_URL', 'http://localhost:3001')
+  process.env.SSO_ISSUER_URL?.trim()
+  || process.env.CENTRAL_SSO_API_URL?.trim()
+  || configurationValue('SSO_ISSUER_URL', 'http://localhost:3001')
 ).replace(/\/+$/, '');
 
 const getCentralSsoIssuer = () => (
-  configurationValue('CENTRAL_SSO_ISSUER_URL', getCentralSsoApiUrl())
+  process.env.SSO_ISSUER_URL?.trim()
+  || process.env.CENTRAL_SSO_ISSUER_URL?.trim()
+  || getCentralSsoApiUrl()
 ).replace(/\/+$/, '');
 
 const getSsoClientId = () => configurationValue('SSO_CLIENT_ID', 'demo-client-app');
@@ -283,14 +287,17 @@ const verifyCentralAccessToken = async (accessToken, requestId) => {
     throw authError(401, 'SSO_TOKEN_INVALID', 'Central SSO signing key is invalid');
   }
 
+  const expectedIssuer = getCentralSsoIssuer();
+  const expectedAudience = getSsoClientId();
+
   try {
     return jwt.verify(accessToken, publicKey, {
       algorithms: ['RS256'],
-      issuer: getCentralSsoIssuer(),
-      audience: getSsoClientId(),
+      issuer: expectedIssuer,
+      audience: expectedAudience,
     });
-  } catch {
-    throw authError(401, 'SSO_TOKEN_INVALID', 'Central SSO access token is invalid');
+  } catch (verifyError) {
+    throw authError(401, 'SSO_TOKEN_INVALID', `Central SSO access token is invalid: ${verifyError.message}`);
   }
 };
 
